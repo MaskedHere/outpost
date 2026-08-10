@@ -1,0 +1,74 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  username     String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+}
+
+model GameServer {
+  id            String    @id @default(uuid())
+  name          String
+  game          String    @default("minecraft")
+  loader        String // vanilla | paper | fabric | forge | neoforge | quilt
+  mcVersion     String
+  containerId   String? // docker container id once created
+  containerName String    @unique
+  gamePort      Int
+  memoryMb      Int       @default(2048)
+  dataPath      String // host path bind-mounted into the container
+  packId        String?
+  pack          Pack?     @relation(fields: [packId], references: [id])
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  backups       Backup[]
+}
+
+model Pack {
+  id        String     @id @default(uuid())
+  name      String
+  mcVersion String
+  loader    String // fabric | forge | neoforge | quilt
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  items     PackItem[]
+  servers   GameServer[]
+}
+
+model PackItem {
+  id            String   @id @default(uuid())
+  packId        String
+  pack          Pack     @relation(fields: [packId], references: [id], onDelete: Cascade)
+  projectId     String // modrinth project id
+  projectSlug   String
+  projectName   String
+  versionId     String // modrinth version id
+  versionNumber String
+  filename      String
+  downloadUrl   String
+  sha1          String
+  sha512        String
+  fileSizeBytes Int      @default(0)
+  isDependency  Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@unique([packId, projectId])
+}
+
+model Backup {
+  id        String     @id @default(uuid())
+  serverId  String
+  server    GameServer @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  filename  String
+  sizeBytes Int
+  createdAt DateTime   @default(now())
+}

@@ -1,0 +1,55 @@
+# Outpost — self-hosted game server panel
+#
+# This file targets ZimaOS/CasaOS's "Install a customized app" flow (compose import) and, with
+# the x-casaos block filled in, the community App Store submission format. The x-casaos schema
+# below is a best-effort reproduction from public CasaOS app-store examples — verify it against
+# the current ZimaOS App Store submission docs before actually submitting it there (see
+# docs/ZIMAOS_INSTALL.md).
+#
+# SECURITY NOTE: this mounts the host's Docker socket so Outpost can create/manage game-server
+# containers. That gives the Outpost container root-equivalent power on the host, the same
+# trust model as Portainer/Watchtower. Only run this on a NAS you control, and make sure you
+# complete the admin setup screen the first time you open it — there is no anonymous access.
+
+name: outpost
+
+services:
+  outpost:
+    image: ghcr.io/outpost-panel/outpost:latest
+    container_name: outpost
+    restart: unless-stopped
+    network_mode: bridge
+    ports:
+      - target: 3000
+        published: "7420"
+        protocol: tcp
+    environment:
+      - JWT_SECRET=please-change-this-to-a-long-random-string
+      - MC_PORT_RANGE_START=25565
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+      - type: bind
+        source: /DATA/AppData/outpost
+        target: /data
+    x-casaos:
+      architectures:
+        - amd64
+        - arm64
+      main: outpost
+      description:
+        en_us: Self-hosted game server panel with a built-in Minecraft modpack studio. Spin up vanilla/Paper/Fabric/Forge servers, build modpacks from Modrinth, and share a client pack with friends in one click.
+      tagline:
+        en_us: Host game nights with your friends. No monthly fee.
+      icon: https://raw.githubusercontent.com/outpost-panel/outpost/main/packaging/icon.png
+      thumbnail: ""
+      title:
+        en_us: Outpost
+      category: Game
+      port_map: "7420"
+      index: /
+      scheme: http
+      developer: outpost-panel
+      author: outpost-panel
+      web_ui: true

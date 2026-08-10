@@ -1,0 +1,27 @@
+node_modules/
+dist/
+build/
+.vite/
+*.log
+npm-debug.log*
+
+# env / secrets
+.env
+.env.local
+apps/backend/.env
+
+# sqlite dev db
+apps/backend/prisma/dev.db
+apps/backend/prisma/dev.db-journal
+
+# generated prisma client
+apps/backend/generated/
+
+# local runtime data (mirrors /DATA/AppData/outpost on a real host)
+.data/
+
+# editor/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
