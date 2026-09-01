@@ -3,6 +3,7 @@ import js from '@eslint/js';
 import tseslint from '@typescript-eslint/eslint-plugin';
 import tsparser from '@typescript-eslint/parser';
 import prettier from 'eslint-config-prettier';
+import reactHooks from 'eslint-plugin-react-hooks';
 import globals from 'globals';
 
 export default [
@@ -40,6 +41,15 @@ export default [
     languageOptions: {
       globals: { ...globals.browser },
     },
+    // Several components deliberately narrow a polling effect's dependency array (re-running on
+    // every render would restart the interval constantly) and silence this rule inline. Without the
+    // plugin actually registered, those eslint-disable comments referenced a rule that didn't
+    // exist, which is itself an error — so `npm run lint` failed on 12 of them in CI.
+    plugins: { 'react-hooks': reactHooks },
+    rules: {
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
+    },
   },
   prettier,
   {
@@ -49,6 +59,7 @@ export default [
       '**/build/**',
       '**/.vite/**',
       'apps/backend/generated/**',
+      '.data/**',
     ],
   },
 ];

@@ -12,12 +12,17 @@ ready-to-play client pack with one button.
 ## What it does
 
 - **Run game servers as Docker containers**, managed from a clean web UI — no PufferPanel/AMP
-  license, no per-server monthly fee. Minecraft (vanilla, Paper, Fabric, Forge, NeoForge, Quilt) at
-  launch, more games on the roadmap.
-- **Live console**, a **file manager**, and one-click **backups** for every server.
+  license, no per-server monthly fee. Minecraft (vanilla, Paper, Fabric, Forge, NeoForge, Quilt,
+  plus a BungeeCord/Waterfall/Velocity proxy), Terraria, Factorio, Valheim, Team Fortress 2, 7 Days
+  to Die, and Project Zomboid, all free to run (no purchase or paid Steam account needed for the
+  dedicated server itself). More on the roadmap.
+- **Live console** with real commands (RCON) where the game supports it, a **file manager**, and
+  one-click **backups** for every server.
 - **Modpack Studio**: search [Modrinth](https://modrinth.com), build a pack, and either deploy it
   straight to a new server or **export a standard `.mrpack`** your friends open with one click in
-  the Modrinth App or Prism Launcher — no rehosting mod jars, no messing with `mods/` folders by hand.
+  the Modrinth App or Prism Launcher — no rehosting mod jars, no messing with `mods/` folders by
+  hand. Packs are also importable from an existing `.mrpack`, a CurseForge modpack zip, or a plain
+  zip of `.jar` mods.
 
 ## Install on ZimaOS
 
@@ -52,6 +57,27 @@ npm run build           # builds both apps
 docker build -f packaging/Dockerfile -t outpost .
 ```
 
+## Releasing
+
+The `version` field in the repo-root `package.json` is the single source of truth for a release. It
+is stamped into the faint version label in the UI's bottom-right corner at build time, and is what
+the published image should be tagged with — so the number on screen always identifies the exact
+build a machine is running, which is the quickest way to tell whether a deploy actually landed.
+
+Bump it once per release, then build and push both tags together:
+
+```bash
+npm version patch --no-git-tag-version    # or edit package.json by hand
+npm run build
+VERSION=$(node -p "require('./package.json').version")
+docker build -f packaging/Dockerfile -t ghcr.io/<owner>/outpost:latest -t ghcr.io/<owner>/outpost:"$VERSION" .
+docker push ghcr.io/<owner>/outpost:latest
+docker push ghcr.io/<owner>/outpost:"$VERSION"
+```
+
+Keeping `latest` and the version tag on the same digest means a NAS pulling `latest` reports the
+same version the label shows.
+
 ## Architecture
 
 One container, Fastify + TypeScript backend, React + TypeScript frontend, SQLite via Prisma,
@@ -62,14 +88,22 @@ actual Minecraft server bootstrapping. Full write-up in
 
 ## Roadmap
 
-Built and working today: server lifecycle (create/start/stop/restart/delete), live console, file
-manager, backups, Modrinth-backed modpack studio with dependency resolution, `.mrpack` export,
-Docker packaging.
+Built and working today: server lifecycle (create/start/stop/restart/delete), live console (RCON
+where the game supports it), file manager, backups, Modrinth-backed modpack studio with dependency
+resolution + `.mrpack`/CurseForge/zip import, `.mrpack` export, Docker packaging, and 8 games
+beyond Minecraft (see above) via the `GameDefinition` plugin seam in `apps/backend/src/games/`.
+
+Known gap: Garry's Mod has a working `GameDefinition` but its dedicated server segfaults on boot
+against every Docker image tried so far (`Gamemode "sandbox" doesn't exist!` right before the
+crash, despite the gamemode files being present on disk) — a known-hard-to-diagnose class of issue
+for Source-engine servers. It's registered but not recommended until someone can dig further.
 
 Deliberately not yet built:
 
-- Game engines beyond Minecraft (the internal `GameDefinition` plugin seam exists for this —
-  see `apps/backend/src/games/`)
+- ARMA 3 (its dedicated server generally needs a paid Steam account, not just anonymous SteamCMD
+  login, so it doesn't fit the "no purchase required" bar the other games meet)
+- More PufferPanel-parity games (Rust, ARK, CS2, Squad, Starbound, Vintage Story, Eco, ...) —
+  straightforward to add via the same `GameDefinition` seam, just not done yet
 - Multi-user accounts / role-based access (currently: one admin account)
 - Scheduled/automatic backups (manual backup button exists; no cron yet)
 - Forge/NeoForge loader-version pinning in exported `.mrpack` files (Fabric/Quilt are fully

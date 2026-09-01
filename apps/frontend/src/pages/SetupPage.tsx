@@ -1,7 +1,9 @@
 import { FormEvent, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
+import { motion } from 'framer-motion';
 import { authApi } from '../lib/api';
 import { useAuth } from '../lib/AuthContext';
+import Logo from '../components/Logo';
 
 export default function SetupPage() {
   const { status, loading, refresh } = useAuth();
@@ -36,13 +38,17 @@ export default function SetupPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-base-950 px-4">
-      <form onSubmit={handleSubmit} className="card w-full max-w-sm p-8">
+    <div className="flex min-h-screen items-center justify-center px-4">
+      <motion.form
+        initial={{ opacity: 0, y: 12, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+        onSubmit={handleSubmit}
+        className="card w-full max-w-sm p-8"
+      >
         <div className="mb-1 flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-500 text-base-950 font-bold">
-            O
-          </div>
-          <span className="text-lg font-semibold text-base-50">Outpost</span>
+          <Logo className="h-8 w-8" />
+          <span className="brand-text text-lg font-semibold">Outpost</span>
         </div>
         <h1 className="mb-1 mt-4 text-xl font-semibold text-base-50">Create the admin account</h1>
         <p className="mb-6 text-sm text-base-500">
@@ -89,10 +95,10 @@ export default function SetupPage() {
 
         {error && <p className="mb-4 text-sm text-red-400">{error}</p>}
 
-        <button type="submit" className="btn-primary w-full" disabled={submitting}>
+        <button type="submit" className="btn-primary w-full transition-transform active:scale-95" disabled={submitting}>
           {submitting ? 'Creating…' : 'Create account & continue'}
         </button>
-      </form>
+      </motion.form>
     </div>
   );
 }

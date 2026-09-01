@@ -60,6 +60,60 @@ export async function fileRoutes(app: FastifyInstance) {
     return { path: query.path ?? '', items };
   });
 
+  // Walks the tree depth-first, only stat-ing entries that actually match (recursing into every
+  // directory regardless, since a match could be nested arbitrarily deep) — bounded on both match
+  // count and total entries visited so a modded server's tens of thousands of library/world files
+  // can't turn one search into a multi-second (or worse) filesystem crawl.
+  const SEARCH_LIMITS = { maxResults: 200, maxScanned: 20000 };
+
+  async function searchTree(
+    root: string,
+    dir: string,
+    query: string,
+    results: { path: string; name: string; isDir: boolean; size: number }[],
+    scanned: { count: number },
+  ): Promise<void> {
+    if (results.length >= SEARCH_LIMITS.maxResults || scanned.count >= SEARCH_LIMITS.maxScanned) return;
+    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (results.length >= SEARCH_LIMITS.maxResults || scanned.count >= SEARCH_LIMITS.maxScanned) return;
+      scanned.count++;
+      const full = path.join(dir, entry.name);
+      if (entry.name.toLowerCase().includes(query)) {
+        const stat = await fs.stat(full).catch(() => null);
+        results.push({
+          path: path.relative(root, full).replace(/\\/g, '/'),
+          name: entry.name,
+          isDir: entry.isDirectory(),
+          size: stat?.size ?? 0,
+        });
+      }
+      if (entry.isDirectory()) await searchTree(root, full, query, results, scanned);
+    }
+  }
+
+  app.get('/api/servers/:id/files/search', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const dataPath = await getServerDataPath(id, reply);
+    if (!dataPath) return;
+
+    const query = request.query as { q?: string; path?: string };
+    const q = (query.q ?? '').trim().toLowerCase();
+    if (!q) return { items: [], truncated: false };
+
+    let scopeDir: string;
+    try {
+      scopeDir = resolveSafePath(dataPath, query.path);
+    } catch {
+      return reply.code(400).send({ error: 'Invalid path' });
+    }
+
+    const results: { path: string; name: string; isDir: boolean; size: number }[] = [];
+    const scanned = { count: 0 };
+    await searchTree(path.resolve(dataPath), scopeDir, q, results, scanned);
+    return { items: results, truncated: results.length >= SEARCH_LIMITS.maxResults || scanned.count >= SEARCH_LIMITS.maxScanned };
+  });
+
   app.get('/api/servers/:id/files/content', async (request, reply) => {
     const { id } = request.params as { id: string };
     const dataPath = await getServerDataPath(id, reply);

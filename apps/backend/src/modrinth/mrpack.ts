@@ -23,19 +23,25 @@ export function buildMrpack(
   const loaderKey = LOADER_DEPENDENCY_KEY[pack.loader];
   if (loaderKey && loaderVersion) dependencies[loaderKey] = loaderVersion;
 
+  // "local" items (a jar Outpost has the actual bytes for but never matched on Modrinth — see
+  // PackItem.source) have no downloadUrl at all, since there's nowhere on Modrinth's CDN to point
+  // to; a pure-URL mrpack has no way to represent them, so they're left out of the export rather
+  // than emitting a broken `downloads: [null]` entry. They still deploy fine directly from Outpost.
   const index = {
     formatVersion: 1,
     game: 'minecraft',
     versionId: `${pack.mcVersion}-${pack.id.slice(0, 8)}`,
     name: pack.name,
     summary: `Modpack built with Outpost for Minecraft ${pack.mcVersion} (${pack.loader}).`,
-    files: pack.items.map((item) => ({
-      path: `mods/${item.filename}`,
-      hashes: { sha1: item.sha1, sha512: item.sha512 },
-      env: { client: 'required', server: 'required' },
-      downloads: [item.downloadUrl],
-      fileSize: item.fileSizeBytes,
-    })),
+    files: pack.items
+      .filter((item) => item.source === 'modrinth' && item.downloadUrl)
+      .map((item) => ({
+        path: `mods/${item.filename}`,
+        hashes: { sha1: item.sha1, sha512: item.sha512 },
+        env: { client: 'required', server: 'required' },
+        downloads: [item.downloadUrl],
+        fileSize: item.fileSizeBytes,
+      })),
     dependencies,
   };
 

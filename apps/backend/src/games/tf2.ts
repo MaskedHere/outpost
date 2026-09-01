@@ -1,0 +1,259 @@
+import type { GameDefinition } from './types.js';
+import { parseSourceStatus } from './sourceEngine.js';
+
+// ghcr.io/melkortf/tf2-base: https://github.com/melkortf/tf2-servers
+// Team Fortress 2 is free-to-play, so its dedicated server (also free, SteamCMD app id 232250)
+// needs no purchase or paid Steam account. RCON and hostname are first-class env vars here.
+const IMAGE = 'ghcr.io/melkortf/tf2-base';
+
+// TF2 doesn't have a separate "gamemode" setting — the mode is baked into each map file itself
+// (a CTF map only ever plays CTF), so "pick a gamemode" is really "pick a map from that mode's
+// pool." This image ships with only cp_badlands baked in to stay small; every map below is a real
+// stock file — confirmed live: after a one-time `steamcmd ... validate` pass (see
+// tf2MapsService.ts, triggered by the "Install extra maps" button), every one of these exists on
+// disk. This is the complete stock map list from that same server.
+
+const CATEGORIES: Record<string, string> = {
+  ctf: 'Capture the Flag',
+  cp: 'Control Point',
+  cppl: 'Control Point',
+  pl: 'Payload',
+  plr: 'Payload Race',
+  koth: 'King of the Hill',
+  arena: 'Arena',
+  mvm: 'Mann vs. Machine',
+  pd: 'Player Destruction',
+  pass: 'PASS Time',
+  sd: 'Special Delivery',
+  tc: 'Territorial Control',
+  vsh: 'Versus Saxton Hale',
+  zi: 'Zombie Infection',
+  tr: 'Training',
+  htf: 'Hold the Flag',
+  rd: 'Robot Destruction',
+  tow: 'Tug of War',
+};
+
+// A few of the most-requested maps get a hand-picked friendlier name; everything else falls back
+// to prettifying the filename itself (still perfectly readable, just not hand-tuned).
+const NICE_NAMES: Record<string, string> = {
+  ctf_2fort: '2Fort',
+  pl_badwater: 'Badwater Basin',
+  pl_goldrush: 'Gold Rush',
+  cp_gravelpit: 'Gravel Pit',
+};
+
+// The complete stock .bsp list (minus background01/itemtest, which aren't real playable maps),
+// grouped by mode purely for readability here — the actual grouping used by the UI is derived
+// from each name's prefix at runtime.
+const MAP_NAMES = [
+  // Capture the Flag
+  'ctf_2fort', 'ctf_2fort_invasion', 'ctf_applejack', 'ctf_crasher', 'ctf_doublecross', 'ctf_doublecross_event',
+  'ctf_doublecross_snowy', 'ctf_foundry', 'ctf_frosty', 'ctf_gorge', 'ctf_haarp', 'ctf_hellfire',
+  'ctf_helltrain_event', 'ctf_landfall', 'ctf_pelican_peak', 'ctf_penguin_peak', 'ctf_pressure', 'ctf_sawmill',
+  'ctf_sidewinder', 'ctf_snowfall_final', 'ctf_thundermountain', 'ctf_turbine', 'ctf_turbine_winter', 'ctf_well',
+  // Control Point
+  'cp_5gorge', 'cp_altitude', 'cp_ambush_event', 'cp_badlands', 'cp_brew', 'cp_burghausen', 'cp_canaveral_5cp',
+  'cp_cargo', 'cp_carrier', 'cp_cloak', 'cp_coldfront', 'cp_conifer', 'cp_cowerhouse', 'cp_darkmarsh',
+  'cp_degrootkeep', 'cp_degrootkeep_rats', 'cp_dustbowl', 'cp_egypt_final', 'cp_fastlane', 'cp_fortezza',
+  'cp_foundry', 'cp_freaky_fair', 'cp_freight_final1', 'cp_frostwatch', 'cp_fulgur', 'cp_gorge', 'cp_gorge_event',
+  'cp_granary', 'cp_gravelpit', 'cp_gravelpit_snowy', 'cp_gullywash_final1', 'cp_hadal', 'cp_hardwood_final',
+  'cp_junction_final', 'cp_lavapit_final', 'cp_manor_event', 'cp_mercenarypark', 'cp_metalworks', 'cp_mojave',
+  'cp_mossrock', 'cp_mountainlab', 'cp_overgrown', 'cp_powerhouse', 'cp_premuda', 'cp_process_final',
+  'cp_reckoner', 'cp_snakewater_final1', 'cp_snowplow', 'cp_spookeyridge', 'cp_standin_final', 'cp_steel',
+  'cp_sulfur', 'cp_sunshine', 'cp_sunshine_event', 'cp_vanguard', 'cp_well', 'cp_yukon_final', 'cppl_gavle',
+  // Payload
+  'pl_aquarius', 'pl_badwater', 'pl_barnblitz', 'pl_bloodwater', 'pl_borneo', 'pl_breadspace', 'pl_cactuscanyon',
+  'pl_camber', 'pl_cashworks', 'pl_chilly', 'pl_citadel', 'pl_coal_event', 'pl_corruption', 'pl_embargo',
+  'pl_emerge', 'pl_enclosure_final', 'pl_fifthcurve_event', 'pl_frontier_final', 'pl_frostcliff', 'pl_goldrush',
+  'pl_hasslecastle', 'pl_hoodoo_final', 'pl_millstone_event', 'pl_odyssey', 'pl_patagonia', 'pl_phoenix',
+  'pl_pier', 'pl_precipice_event_final', 'pl_redwood', 'pl_rumble_event', 'pl_rumford_event', 'pl_sludgepit_event',
+  'pl_snowycoast', 'pl_spineyard', 'pl_swiftwater_final1', 'pl_terror_event', 'pl_thundermountain', 'pl_upward',
+  'pl_venice', 'pl_wutville_event',
+  // Payload Race
+  'plr_bananabay', 'plr_cutter', 'plr_hacksaw', 'plr_hacksaw_event', 'plr_hightower', 'plr_hightower_event',
+  'plr_matterhorn', 'plr_nightfall_final', 'plr_pipeline',
+  // King of the Hill
+  '2koth_abbey', 'koth_badlands', 'koth_bagel_event', 'koth_blowout', 'koth_boardwalk', 'koth_brazil',
+  'koth_cachoeira', 'koth_camp_saxton', 'koth_cascade', 'koth_demolition', 'koth_dryfield', 'koth_dusker',
+  'koth_harvest_event', 'koth_harvest_final', 'koth_highpass', 'koth_king', 'koth_krampus', 'koth_lakeside_event',
+  'koth_lakeside_final', 'koth_lazarus', 'koth_los_muertos', 'koth_mannhole', 'koth_maple_ridge_event',
+  'koth_megalo', 'koth_megaton', 'koth_moonshine_event', 'koth_nucleus', 'koth_overcast_final', 'koth_probed',
+  'koth_rotunda', 'koth_sawmill', 'koth_sawmill_event', 'koth_sharkbay', 'koth_shorelight', 'koth_slasher',
+  'koth_slaughter_event', 'koth_slime', 'koth_snowtower', 'koth_suijin', 'koth_synthetic_event', 'koth_toxic',
+  'koth_undergrove_event', 'koth_viaduct', 'koth_viaduct_event', 'koth_winter_ridge',
+  // Arena
+  'arena_afterlife', 'arena_badlands', 'arena_byre', 'arena_granary', 'arena_lumberyard',
+  'arena_lumberyard_event', 'arena_nucleus', 'arena_offblast_final', 'arena_perks', 'arena_ravine',
+  'arena_sawmill', 'arena_watchtower', 'arena_well',
+  // Mann vs. Machine (co-op vs. bots — needs a matching MvM mission/popfile to actually run waves)
+  'mvm_bigrock', 'mvm_coaltown', 'mvm_decoy', 'mvm_ghost_town', 'mvm_mannhattan', 'mvm_mannworks',
+  'mvm_rottenburg',
+  // Player Destruction
+  'pd_atom_smash', 'pd_circus', 'pd_cursed_cove_event', 'pd_farmageddon', 'pd_galleria', 'pd_mannsylvania',
+  'pd_monster_bash', 'pd_nutcracker', 'pd_pit_of_death_event', 'pd_selbyen', 'pd_snowville_event', 'pd_watergate',
+  // PASS Time
+  'pass_brickyard', 'pass_district', 'pass_timbertown',
+  // Special Delivery
+  'sd_doomsday', 'sd_doomsday_event',
+  // Territorial Control (legacy mode)
+  'tc_hydro',
+  // Versus Saxton Hale / Zombie Infection — community modes that need a matching plugin to run
+  // their special rules; without one these just load as an empty map.
+  'vsh_distillery', 'vsh_maul', 'vsh_nucleus', 'vsh_outburst', 'vsh_skirmish', 'vsh_tinyrock',
+  'zi_atoll', 'zi_blazehattan', 'zi_devastation_final1', 'zi_murky', 'zi_sanitarium', 'zi_woods',
+  // Misc
+  'htf_marshlands', 'rd_asteroid', 'tow_dynamite', 'tr_dustbowl', 'tr_target',
+];
+
+function categoryOf(map: string): string {
+  const prefix = map.match(/^(\d*[a-z]+?)_/)?.[1]?.replace(/^\d+/, '') ?? '';
+  return CATEGORIES[prefix] ?? 'Other';
+}
+
+function prettyName(map: string): string {
+  if (NICE_NAMES[map]) return NICE_NAMES[map];
+  const prefix = map.match(/^(\d*[a-z]+?)_/)?.[0] ?? '';
+  const isEvent = /_event$/.test(map);
+  const rest = map
+    .slice(prefix.length)
+    .replace(/_(final\d*|event)$/i, '')
+    .split('_')
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+  return isEvent ? `${rest} (Event)` : rest;
+}
+
+const VARIANTS: Record<string, string> = Object.fromEntries(
+  MAP_NAMES.map((map) => [map, `${categoryOf(map)} — ${prettyName(map)}`]),
+);
+
+export const tf2Definition: GameDefinition = {
+  id: 'tf2',
+  displayName: 'Team Fortress 2',
+  variants: Object.keys(VARIANTS),
+  variantLabels: VARIANTS,
+  variantFieldLabel: 'Map',
+  versionLabel: null,
+  moddable: false,
+  steamAppId: 440,
+  gamePortProtocol: 'udp',
+  players: {
+    list: {
+      command: 'status',
+      parse: parseSourceStatus,
+    },
+    kick: (player) => `kick "${player.name}"`,
+    ban: (player) => `banid 0 ${player.id} kick`,
+    unban: (player) => `removeid ${player.id}`,
+  },
+  mapControl: {
+    options: VARIANTS,
+    changeCommand: (map) => `changelevel ${map}`,
+  },
+  settings: [
+    {
+      key: 'maxplayers',
+      label: 'Max players',
+      info: 'TF2 standard is 24. Servers above that are the "trade server" style — playable, but several official maps have spawn rooms that get crowded past 24.',
+      type: 'number',
+      default: '24',
+      min: 2,
+      max: 32,
+      group: 'Capacity',
+    },
+    {
+      key: 'sv_password',
+      label: 'Join password',
+      info: 'Players are asked for this when connecting. Leave blank for an open server.',
+      type: 'text',
+      default: '',
+      group: 'Access',
+    },
+    {
+      key: 'sv_alltalk',
+      label: 'Global voice chat',
+      info: 'Off by default, so voice chat stays within your team. On lets both teams hear each other — usually wanted on a casual/friends server.',
+      type: 'toggle',
+      default: '0',
+      onValue: '1',
+      offValue: '0',
+      group: 'Gameplay',
+    },
+    {
+      key: 'mp_friendlyfire',
+      label: 'Friendly fire',
+      info: 'Off by default. On, teammates can damage each other — almost always left off outside of joke servers.',
+      type: 'toggle',
+      default: '0',
+      onValue: '1',
+      offValue: '0',
+      group: 'Gameplay',
+    },
+    {
+      key: 'sv_cheats',
+      label: 'Allow cheat commands',
+      info: 'Off by default. On, players can use commands like noclip — useful for exploring a map with friends, a bad idea on a public server.',
+      type: 'toggle',
+      default: '0',
+      onValue: '1',
+      offValue: '0',
+      group: 'Gameplay',
+    },
+    {
+      key: 'mp_timelimit',
+      label: 'Map time limit (minutes)',
+      info: 'How long before the server rotates to the next map. 0 means never — the same map stays loaded until someone changes it from the Settings tab.',
+      type: 'number',
+      default: '30',
+      min: 0,
+      max: 180,
+      group: 'Gameplay',
+    },
+  ],
+
+  buildContainerSpec({ name, containerName, dataPath, memoryMb, variant, rconPassword, extraSettings }) {
+    const setting = (key: string, fallback: string) => extraSettings?.[key] ?? fallback;
+    return {
+      image: IMAGE,
+      containerName,
+      env: [
+        'IP=0.0.0.0',
+        'PORT=27015',
+        `RCON_PASSWORD=${rconPassword}`,
+        `SERVER_HOSTNAME=${name}`,
+      ],
+      // Always boots on cp_badlands — the one map guaranteed to exist on the base image (see the
+      // comment above). variant is the player's actually-desired map; serverService.ts installs
+      // the full stock map set in the background right after create and then live-switches to it
+      // via RCON, so booting straight into an uninstalled variant never happens.
+      cmd: [
+        '+sv_pure', '1',
+        '+map', 'cp_badlands',
+        '+maxplayers', setting('maxplayers', '24'),
+        '+sv_alltalk', setting('sv_alltalk', '0'),
+        '+mp_friendlyfire', setting('mp_friendlyfire', '0'),
+        '+sv_cheats', setting('sv_cheats', '0'),
+        '+mp_timelimit', setting('mp_timelimit', '30'),
+        // Unlike GMod's single unquoted GAME_PARAMS string, these are real argv entries, so a
+        // password with spaces in it is passed through intact rather than word-split.
+        ...(setting('sv_password', '') ? ['+sv_password', setting('sv_password', '')] : []),
+      ],
+      ports: [
+        { containerPort: 27015, protocol: 'udp', purpose: 'game' },
+        { containerPort: 27015, protocol: 'tcp', purpose: 'rcon' },
+      ],
+      // This image bakes its entrypoint script and the installed server itself directly into
+      // /home/tf2/server at build time (see melkortf/tf2-servers' Dockerfile) — bind-mounting
+      // over that path wipes them out and the container fails to start. No persistent volume for
+      // v1: the server still runs and has a live console, it just won't survive container
+      // recreation and won't show up in the Files/Backups tabs. (This also means a freshly
+      // recreated container starts back at just cp_badlands — "Install extra maps" needs
+      // re-running after any recreate, e.g. a memory change.)
+      volumes: [],
+      memoryMb,
+      dataPath,
+    };
+  },
+};

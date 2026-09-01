@@ -15,15 +15,32 @@ model User {
   createdAt    DateTime @default(now())
 }
 
+// Singleton row (always id "default") for panel-wide settings that aren't tied to any one server —
+// see routes/settings.ts.
+model Settings {
+  id               String @id @default("default")
+  // Pre-fills the playit.gg secret key field when enabling public access on a server, so it only
+  // has to be pasted in once instead of per-server.
+  defaultPlayitKey String?
+  // Seeds the memory slider's starting value in the "New server" wizard.
+  defaultMemoryMb  Int    @default(2048)
+  // Whether new servers reuse the shared per-game content cache instead of re-downloading the whole
+  // game from Steam every time. On by default (it's the whole point); turning it off suits a setup
+  // that would rather trade slow creates for keeping nothing pre-staged on disk.
+  useGameCache     Boolean @default(true)
+}
+
 model GameServer {
   id            String    @id @default(uuid())
   name          String
   game          String    @default("minecraft")
-  loader        String // vanilla | paper | fabric | forge | neoforge | quilt
-  mcVersion     String
+  variant       String // per-game server flavor: vanilla | paper | fabric | ... for minecraft, "default" for most others
+  version       String
   containerId   String? // docker container id once created
   containerName String    @unique
   gamePort      Int
+  rconPort      Int? // host-mapped RCON port, null when this game has no RCON console
+  rconPassword  String? // null when this game has no RCON console
   memoryMb      Int       @default(2048)
   dataPath      String // host path bind-mounted into the container
   packId        String?
@@ -31,6 +48,31 @@ model GameServer {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   backups       Backup[]
+  plugins       ServerPlugin[]
+  sightings     PlayerSighting[]
+
+  // Everything else buildContainerSpec() needs to faithfully recreate this exact container later
+  // (e.g. when memory changes) — without these, a rebuild would silently drop the MOTD or any
+  // installed Steam Workshop mods instead of reproducing what's actually running.
+  motd                 String?
+  workshopCollectionId String?
+  workshopItemIds       String? // JSON-encoded string[]
+  modIds                String? // JSON-encoded string[]
+  // Extra per-game server behavior settings (Minecraft: allow-flight, pvp, difficulty, etc.) — JSON-
+  // encoded Record<string,string> of itzg env-var-style keys (ALLOW_FLIGHT, PVP, ...) straight to
+  // buildContainerSpec, so adding a new supported setting never needs its own migration.
+  extraSettings          String?
+
+  // Public access via a playit.gg tunnel sidecar — lets friends outside the LAN connect without
+  // router port-forwarding. tunnelContainerId set means a tunnel agent exists for this server.
+  tunnelContainerId String?
+  tunnelSecretKey   String?
+
+  // Alternative public access via bore (github.com/ekzhang/bore) and its free bore.pub relay —
+  // genuinely no account needed, unlike playit.gg, but TCP-only and the address isn't guaranteed
+  // stable across restarts. Only offered for games whose game port is TCP.
+  boreContainerId String?
+  borePort        Int?
 }
 
 model Pack {
@@ -45,23 +87,32 @@ model Pack {
 }
 
 model PackItem {
-  id            String   @id @default(uuid())
-  packId        String
-  pack          Pack     @relation(fields: [packId], references: [id], onDelete: Cascade)
-  projectId     String // modrinth project id
-  projectSlug   String
+  id     String @id @default(uuid())
+  packId String
+  pack   Pack   @relation(fields: [packId], references: [id], onDelete: Cascade)
+
+  // "modrinth" items install via itzg's MODRINTH_PROJECTS mechanism (auto-updatable, no file
+  // storage needed on our side). "local" items are mod jars Outpost received real bytes for (e.g.
+  // extracted straight out of an imported CurseForge instance zip) but couldn't identify on
+  // Modrinth by hash or name — projectId/versionId/downloadUrl are meaningless for these, so they
+  // stay null; localFilePath (relative to config.packsDir) points at the stored jar instead, and
+  // serverService copies it directly into the server's mods folder at deploy time.
+  source        String  @default("modrinth")
+  projectId     String? // modrinth project id
+  projectSlug   String?
   projectName   String
-  versionId     String // modrinth version id
-  versionNumber String
+  versionId     String? // modrinth version id
+  versionNumber String?
+  localFilePath String?
   filename      String
-  downloadUrl   String
+  downloadUrl   String?
   sha1          String
-  sha512        String
+  sha512        String?
   fileSizeBytes Int      @default(0)
   isDependency  Boolean  @default(false)
   createdAt     DateTime @default(now())
 
-  @@unique([packId, projectId])
+  @@unique([packId, filename])
 }
 
 model Backup {
@@ -71,4 +122,46 @@ model Backup {
   filename  String
   sizeBytes Int
   createdAt DateTime   @default(now())
+}
+
+// A Minecraft (Paper) server's installed plugins — kept per-server rather than as a shareable Pack
+// like mods, since plugins are normally managed directly on one server rather than distributed as
+// a pack to friends. Same Modrinth-project shape as PackItem; itzg's image installs whatever's in
+// MODRINTH_PROJECTS as plugins (not mods) automatically when the server TYPE is PAPER, so this
+// reuses that exact mechanism — see games/minecraft.ts and serverService.ts.
+model ServerPlugin {
+  id            String     @id @default(uuid())
+  serverId      String
+  server        GameServer @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  projectId     String
+  projectSlug   String
+  projectName   String
+  versionId     String
+  versionNumber String
+  filename      String
+  downloadUrl   String
+  sha1          String
+  sha512        String
+  fileSizeBytes Int        @default(0)
+  createdAt     DateTime   @default(now())
+
+  @@unique([serverId, projectId])
+}
+
+// A running record of every player RCON has ever reported connected to this server — the "Offline"
+// tab in Players is this list minus whoever's currently online (and minus anyone already banned),
+// so someone who caused trouble and disconnected before an admin could act can still be found and
+// banned by name/SteamID after the fact. Populated as a side effect of the same RCON player-list
+// poll that already powers the online count (see playersService.ts's getPlayerSummary) — no
+// separate background job, so coverage is "whenever the panel's been open," not exhaustive.
+model PlayerSighting {
+  id          String     @id @default(uuid())
+  serverId    String
+  server      GameServer @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  playerId    String // the RCON-native id: username for Minecraft/Factorio/Zomboid, SteamID for Source engine
+  playerName  String
+  firstSeenAt DateTime   @default(now())
+  lastSeenAt  DateTime   @default(now())
+
+  @@unique([serverId, playerId])
 }

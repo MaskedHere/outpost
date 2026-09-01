@@ -1,10 +1,12 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { FiSettings } from 'react-icons/fi';
 import { authApi } from '../lib/api';
 import { useAuth } from '../lib/AuthContext';
+import Logo from './Logo';
 
 const navItemClass = ({ isActive }: { isActive: boolean }) =>
-  `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-    isActive ? 'bg-accent-500/15 text-accent-400' : 'text-base-200 hover:bg-base-800 hover:text-base-50'
+  `rounded-xl px-3 py-1.5 text-sm font-semibold transition-colors ${
+    isActive ? 'bg-accent-500/15 text-accent-400' : 'text-base-200 hover:bg-base-900 hover:text-base-50'
   }`;
 
 export default function Layout() {
@@ -18,31 +20,37 @@ export default function Layout() {
   };
 
   return (
-    <div className="flex h-screen bg-base-950">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-base-800 p-4">
-        <div className="mb-8 flex items-center gap-2 px-1">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-500 text-base-950 font-bold">
-            O
-          </div>
-          <span className="text-lg font-semibold tracking-tight text-base-50">Outpost</span>
+    <div className="flex h-screen flex-col">
+      <header className="flex shrink-0 items-center gap-6 border-b border-base-800 px-6 py-3">
+        <div className="flex items-center gap-2">
+          <Logo className="h-8 w-8" />
+          <span className="brand-text text-lg font-semibold tracking-tight">Outpost</span>
         </div>
 
-        <nav className="flex flex-1 flex-col gap-1">
+        <nav className="flex items-center gap-1">
           <NavLink to="/" end className={navItemClass}>
             Servers
           </NavLink>
-          <NavLink to="/modpacks" className={navItemClass}>
-            Modpack Studio
-          </NavLink>
         </nav>
 
-        <div className="border-t border-base-800 pt-3">
-          <div className="mb-2 px-1 text-xs text-base-500">Signed in as {status?.username}</div>
-          <button className="btn-secondary w-full" onClick={handleLogout}>
+        <div className="ml-auto flex items-center gap-3">
+          <span className="hidden text-xs text-base-500 sm:inline">Signed in as {status?.username}</span>
+          <NavLink
+            to="/settings"
+            title="Settings"
+            className={({ isActive }) =>
+              `flex h-8 w-8 items-center justify-center rounded-xl transition-colors ${
+                isActive ? 'bg-accent-500/15 text-accent-400' : 'text-base-300 hover:bg-base-900 hover:text-base-50'
+              }`
+            }
+          >
+            <FiSettings className="h-4 w-4" />
+          </NavLink>
+          <button className="btn-secondary !py-1.5" onClick={handleLogout}>
             Log out
           </button>
         </div>
-      </aside>
+      </header>
 
       <main className="flex-1 overflow-y-auto">
         <Outlet />

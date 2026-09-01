@@ -1,0 +1,22 @@
+# Without this, `docker build` uploads the whole working tree as build context — including .data,
+# which holds every server's files and the multi-GB shared game cache.
+.data
+node_modules
+**/node_modules
+.git
+.github
+
+# Build outputs are produced inside the image, never copied in.
+apps/backend/dist
+apps/backend/generated
+apps/frontend/dist
+
+# Local development state — the production image has its own DATABASE_URL under /data.
+apps/backend/.env
+apps/backend/prisma/dev.db
+apps/backend/prisma/dev.db-journal
+**/*.log
+
+docs
+README.md
+LICENSE

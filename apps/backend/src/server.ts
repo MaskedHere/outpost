@@ -14,13 +14,35 @@ import { consoleRoutes } from './routes/console.js';
 import { fileRoutes } from './routes/files.js';
 import { backupRoutes } from './routes/backups.js';
 import { modpackRoutes } from './routes/modpacks.js';
+import { curseforgeRoutes } from './routes/curseforge.js';
+import { settingsRoutes } from './routes/settings.js';
+import { contentCacheRoutes } from './routes/contentCache.js';
+import { pluginRoutes } from './routes/plugins.js';
+import { worldRoutes } from './routes/world.js';
+import { steamWorkshopRoutes } from './routes/steamWorkshop.js';
 
 async function main() {
   await fs.mkdir(config.serversDir, { recursive: true });
   await fs.mkdir(config.backupsDir, { recursive: true });
   await fs.mkdir(config.configDir, { recursive: true });
+  await fs.mkdir(config.gameCacheDir, { recursive: true });
+
+  // Sessions are signed with this — on the default value anyone who knows Outpost is open source
+  // can mint a valid admin cookie. Fine (and convenient) for local development; refusing to boot
+  // in production is what stops a NAS install from silently going out with it unchanged.
+  if (process.env.NODE_ENV === 'production' && config.jwtSecret === 'dev-secret-change-me') {
+    console.error(
+      'Refusing to start: JWT_SECRET is still the built-in development default.\n' +
+        'Set JWT_SECRET to a long random string (e.g. `openssl rand -hex 32`) and restart.',
+    );
+    process.exit(1);
+  }
 
   const app = Fastify({ logger: true, bodyLimit: 10 * 1024 * 1024 });
+
+  // Unauthenticated on purpose — it's what the container HEALTHCHECK polls, and it reports nothing
+  // beyond "the process is up".
+  app.get('/api/health', async () => ({ ok: true }));
 
   await app.register(fastifyCors, { origin: true, credentials: true });
   await app.register(fastifyCookie);
@@ -34,6 +56,12 @@ async function main() {
   await app.register(fileRoutes);
   await app.register(backupRoutes);
   await app.register(modpackRoutes);
+  await app.register(curseforgeRoutes);
+  await app.register(settingsRoutes);
+  await app.register(pluginRoutes);
+  await app.register(worldRoutes);
+  await app.register(steamWorkshopRoutes);
+  await app.register(contentCacheRoutes);
 
   // In production the frontend is built into apps/frontend/dist and served from the same
   // container/port as the API — this is what makes Outpost a single ZimaOS app.

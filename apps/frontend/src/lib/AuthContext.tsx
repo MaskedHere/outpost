@@ -4,6 +4,7 @@ import { authApi, type AuthStatus } from './api';
 interface AuthContextValue {
   status: AuthStatus | null;
   loading: boolean;
+  error: string | null;
   refresh: () => Promise<void>;
 }
 
@@ -12,17 +13,23 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const refresh = async () => {
-    const s = await authApi.status();
-    setStatus(s);
+    try {
+      const s = await authApi.status();
+      setStatus(s);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to reach the Outpost server');
+    }
   };
 
   useEffect(() => {
     refresh().finally(() => setLoading(false));
   }, []);
 
-  return <AuthContext.Provider value={{ status, loading, refresh }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ status, loading, error, refresh }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

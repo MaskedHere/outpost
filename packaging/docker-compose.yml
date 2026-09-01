@@ -19,17 +19,35 @@ services:
     container_name: outpost
     restart: unless-stopped
     network_mode: bridge
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - target: 3000
         published: "7420"
         protocol: tcp
     environment:
+      # REQUIRED — Outpost refuses to start in production until this is changed. Generate one with
+      # `openssl rand -hex 32`. Anyone who knows this value can forge an admin session.
       - JWT_SECRET=please-change-this-to-a-long-random-string
+      # First host port handed out to game servers; each new server takes the next free one above it.
+      # Whatever range you expect to use has to be reachable from outside if you want friends to join
+      # without a tunnel (see the Public access tab for the no-port-forwarding options).
       - MC_PORT_RANGE_START=25565
+      # Game-server RCON ports are published on the *host*, not inside this container.
+      - RCON_HOST=host.docker.internal
+      # REQUIRED, and must match the host side of the /data bind mount below. Outpost creates game
+      # containers through the host's Docker socket, and the daemon resolves bind-mount sources on
+      # the host — so it needs the host path, not Outpost's own /data. Without this, creating a
+      # server fails with `mkdir /data: read-only file system`.
+      - HOST_DATA_DIR=/DATA/AppData/outpost
     volumes:
       - type: bind
         source: /var/run/docker.sock
         target: /var/run/docker.sock
+      # Everything Outpost owns lives here: the SQLite database, each server's files, backups, and
+      # the shared per-game content cache. The cache alone can reach tens of GB across games (7 Days
+      # to Die is ~14GB on its own), so point this at a volume with room — and back it up if the
+      # worlds matter to you.
       - type: bind
         source: /DATA/AppData/outpost
         target: /data
