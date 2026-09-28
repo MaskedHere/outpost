@@ -1,9 +1,9 @@
 import { getProjectVersions, getVersion, type ModrinthVersion } from './client.js';
 
 /**
- * Recursively resolves the "required" dependency tree of a Modrinth version so a pack can be
- * self-contained (Outpost pins exact dependency versions instead of asking itzg's image to
- * resolve them at server start — see MODRINTH_DOWNLOAD_DEPENDENCIES=none in games/minecraft.ts).
+ * Recursively resolves a Modrinth version's required dependencies so a pack is self-contained.
+ * Outpost pins exact versions instead of letting the image resolve them (see
+ * MODRINTH_DOWNLOAD_DEPENDENCIES in games/minecraft.ts).
  */
 export async function resolveDependencies(
   version: ModrinthVersion,

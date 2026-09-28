@@ -26,8 +26,7 @@ export async function backupRoutes(app: FastifyInstance) {
     return prisma.backup.findMany({ where: { serverId: id }, orderBy: { createdAt: 'desc' } });
   });
 
-  // Snapshots the server's data directory to a tar.gz. Stops the container first if it's running
-  // so the world files aren't being written to mid-archive, then restarts it afterwards.
+  // Snapshots the server's data directory to a tar.gz.
   app.post('/api/servers/:id/backups', async (request, reply) => {
     const { id } = request.params as { id: string };
     const server = await getServer(id, reply);
@@ -60,7 +59,8 @@ export async function backupRoutes(app: FastifyInstance) {
   app.get('/api/servers/:id/backups/:backupId/download', async (request, reply) => {
     const { id, backupId } = request.params as { id: string; backupId: string };
     const backup = await prisma.backup.findUnique({ where: { id: backupId } });
-    if (!backup || backup.serverId !== id) return reply.code(404).send({ error: 'Backup not found' });
+    if (!backup || backup.serverId !== id)
+      return reply.code(404).send({ error: 'Backup not found' });
 
     const filePath = path.join(config.backupsDir, id, backup.filename);
     reply.header('Content-Disposition', `attachment; filename="${backup.filename}"`);
@@ -68,13 +68,14 @@ export async function backupRoutes(app: FastifyInstance) {
     return reply.send(createReadStream(filePath));
   });
 
-  // Restores a backup on top of the current data directory. Container is stopped during restore.
+  // Restores a backup on top of the current data directory.
   app.post('/api/servers/:id/backups/:backupId/restore', async (request, reply) => {
     const { id, backupId } = request.params as { id: string; backupId: string };
     const server = await getServer(id, reply);
     if (!server) return;
     const backup = await prisma.backup.findUnique({ where: { id: backupId } });
-    if (!backup || backup.serverId !== id) return reply.code(404).send({ error: 'Backup not found' });
+    if (!backup || backup.serverId !== id)
+      return reply.code(404).send({ error: 'Backup not found' });
 
     const filePath = path.join(config.backupsDir, id, backup.filename);
 
@@ -89,7 +90,8 @@ export async function backupRoutes(app: FastifyInstance) {
   app.delete('/api/servers/:id/backups/:backupId', async (request, reply) => {
     const { id, backupId } = request.params as { id: string; backupId: string };
     const backup = await prisma.backup.findUnique({ where: { id: backupId } });
-    if (!backup || backup.serverId !== id) return reply.code(404).send({ error: 'Backup not found' });
+    if (!backup || backup.serverId !== id)
+      return reply.code(404).send({ error: 'Backup not found' });
 
     await fs.rm(path.join(config.backupsDir, id, backup.filename), { force: true });
     await prisma.backup.delete({ where: { id: backupId } });

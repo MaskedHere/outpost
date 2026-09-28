@@ -21,15 +21,18 @@ docker run -d \
   -p 7420:3000 \
   -e JWT_SECRET="$(openssl rand -hex 32)" \
   -e RCON_HOST=host.docker.internal \
+  -e HOST_DATA_DIR=/DATA/AppData/outpost \
   --add-host host.docker.internal:host-gateway \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /DATA/AppData/outpost:/data \
-  ghcr.io/outpost-panel/outpost:latest
+  ghcr.io/maskedhere/outpost:latest
 ```
 
-`RCON_HOST` and `--add-host` matter: game-server RCON ports are published on the **host**, not
-inside Outpost's own container, so without these the console and player-management tabs can't reach
-them.
+- `RCON_HOST` and `--add-host`: game-server RCON ports are published on the **host**, not inside
+  Outpost's own container, so without these the console and player-management tabs can't reach them.
+- `HOST_DATA_DIR` must match the host side of the `/data` mount. Game containers are created through
+  the host's Docker daemon, which resolves bind-mount paths on the host; without it, creating a server
+  fails with `mkdir /data: read-only file system`.
 
 ## Building the image yourself
 
@@ -47,7 +50,7 @@ Everything except CurseForge browsing/importing works without it.
 
 Point `/data` at a volume with room. Beyond worlds and backups, Outpost keeps one shared copy of
 each Steam-delivered game's files so that only the *first* server of a given game pays for the
-download (Garry's Mod is ~6.9GB, 7 Days to Die ~14GB). Manage these under **Settings → Game file
+download (7 Days to Die is ~14GB). Manage these under **Settings → Game file
 cache** — you can pre-download a game there, remove one to reclaim space, or turn the cache off
 entirely if you'd rather keep nothing pre-staged.
 
@@ -62,5 +65,6 @@ port 7420 directly to the internet without a reverse proxy + auth in front of it
 ## Ports game servers use
 
 Each game server you create gets its own host port, allocated starting at `MC_PORT_RANGE_START`
-(default `25565`). If you're behind a router, forward whichever ports your servers end up on (shown
-in each server's Settings tab) to let friends connect from outside your LAN.
+(default `25565`). To let friends connect from outside your LAN, either forward those ports on your
+router or use one of the options on each server's **Public access** panel: automatic UPnP mapping, a
+playit.gg tunnel, or a bore.pub relay.

@@ -2,13 +2,12 @@ import { docker } from '../docker/client.js';
 import { removeContainer } from '../docker/containers.js';
 import { readContainerLogs } from '../docker/cli.js';
 
-// ghcr.io/playit-cloud/playit-agent — lets friends outside the LAN join without touching router
-// port-forwarding. Requires a free secret key from the user's own playit.gg account (generated
-// via a one-time visit to their setup wizard); Outpost can't create that account or key on
-// someone's behalf, so this is the one manual step that has to happen on playit's own site.
+// ghcr.io/playit-cloud/playit-agent - lets friends outside the LAN join without touching router
+// port-forwarding.
 const TUNNEL_IMAGE = 'ghcr.io/playit-cloud/playit-agent:latest';
 
-export const PLAYIT_KEY_URL = 'https://playit.gg/account/setup/wizard/new-account/docker/docker-name';
+export const PLAYIT_KEY_URL =
+  'https://playit.gg/account/setup/wizard/new-account/docker/docker-name';
 export const PLAYIT_TUNNELS_URL = 'https://playit.gg/account/tunnels';
 
 export async function createTunnel(containerName: string, secretKey: string): Promise<string> {
@@ -17,7 +16,9 @@ export async function createTunnel(containerName: string, secretKey: string): Pr
     await new Promise<void>((resolve, reject) => {
       docker.pull(TUNNEL_IMAGE, (err: Error | null, stream: NodeJS.ReadableStream) => {
         if (err) return reject(err);
-        docker.modem.followProgress(stream, (progressErr) => (progressErr ? reject(progressErr) : resolve()));
+        docker.modem.followProgress(stream, (progressErr) =>
+          progressErr ? reject(progressErr) : resolve(),
+        );
       });
     });
   }
@@ -26,9 +27,7 @@ export async function createTunnel(containerName: string, secretKey: string): Pr
     name: containerName,
     Image: TUNNEL_IMAGE,
     Env: [`SECRET_KEY=${secretKey}`],
-    // playit's own docs target "localhost:<port>" as the tunnel destination — host networking
-    // makes that literally true, matching their instructions exactly instead of making the user
-    // translate to a Docker-bridge address.
+    // playit's own docs target "localhost:<port>" as the tunnel destination.
     HostConfig: { NetworkMode: 'host', RestartPolicy: { Name: 'unless-stopped' } },
     Labels: { 'outpost.managed': 'true', 'outpost.tunnel': 'true' },
   });
@@ -38,8 +37,9 @@ export async function createTunnel(containerName: string, secretKey: string): Pr
 
 export interface TunnelStatus {
   running: boolean;
-  /** A https://playit.gg/claim/... link, only present for legacy/no-key agent runs — the current
-   *  image requires a key up front, so this is normally null. Kept for forward-compatibility. */
+  /**
+   * A https://playit.gg/claim/... link, only present for legacy no-key agent runs; normally null.
+   */
   claimUrl: string | null;
   /** True once the agent's logs show it successfully connected to playit's relay network. */
   connected: boolean;

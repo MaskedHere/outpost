@@ -1,15 +1,67 @@
+import { useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { FiInfo } from 'react-icons/fi';
 
-/** A small hover-for-explanation (i) icon — the plain-language "what does this actually do and why
- *  would I want it" that a setting's own short label never has room for. Named group (group/tip)
- *  so it doesn't fight with an outer hover-group a setting row might already use. */
+/** A small hover-for-explanation (i) icon. */
+const TIP_WIDTH = 260;
+/** Keeps the bubble clear of the window edges when an icon sits near one. */
+const VIEWPORT_MARGIN = 8;
+
 export default function InfoTip({ text }: { text: string }) {
+  const iconRef = useRef<HTMLSpanElement>(null);
+  const [position, setPosition] = useState<{ left: number; top: number; below: boolean } | null>(
+    null,
+  );
+
+  const show = () => {
+    const rect = iconRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    // Centred on the icon, then pulled back inside the viewport if that would overhang either edge.
+    const idealLeft = rect.left + rect.width / 2 - TIP_WIDTH / 2;
+    const maxLeft = window.innerWidth - TIP_WIDTH - VIEWPORT_MARGIN;
+    const left = Math.max(VIEWPORT_MARGIN, Math.min(idealLeft, maxLeft));
+
+    // Prefer above; flip below when there isn't room, so a tip near the top of the page isn't cut
+    // off by the window itself.
+    const below = rect.top < 140;
+    const top = below ? rect.bottom + 8 : rect.top - 8;
+
+    setPosition({ left, top, below });
+  };
+
   return (
-    <span className="group/tip relative inline-flex align-middle">
-      <FiInfo className="h-3.5 w-3.5 cursor-help text-base-500 hover:text-accent-400" />
-      <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 w-56 -translate-x-1/2 rounded-lg border border-base-700 bg-base-900 px-2.5 py-1.5 text-xs font-normal normal-case leading-snug text-base-200 opacity-0 shadow-lg transition-opacity group-hover/tip:opacity-100">
-        {text}
+    <>
+      <span
+        ref={iconRef}
+        className="inline-flex align-middle"
+        onMouseEnter={show}
+        onMouseLeave={() => setPosition(null)}
+        onFocus={show}
+        onBlur={() => setPosition(null)}
+        tabIndex={0}
+      >
+        <FiInfo className="h-3.5 w-3.5 cursor-help text-base-500 hover:text-accent-400" />
       </span>
-    </span>
+
+      {position &&
+        createPortal(
+          <span
+            role="tooltip"
+            className="pointer-events-none fixed z-[200] rounded-lg border border-base-700 bg-base-900 px-2.5 py-1.5 text-xs font-normal normal-case leading-snug text-base-200 shadow-xl"
+            style={{
+              left: position.left,
+              top: position.top,
+              width: TIP_WIDTH,
+              // Anchored by its bottom edge when sitting above the icon, so it grows upward and the
+              // gap to the icon stays constant however tall the text is.
+              transform: position.below ? undefined : 'translateY(-100%)',
+            }}
+          >
+            {text}
+          </span>,
+          document.body,
+        )}
+    </>
   );
 }

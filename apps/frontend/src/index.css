@@ -2,9 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* The app has an always-on ambient animation (the swaying treeline). Someone who
-   has asked their system for reduced motion should get the scene, not the movement — so animations
-   are collapsed to a single static frame rather than merely shortened. */
+/* The app has an always-on ambient animation (the swaying treeline). */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -25,11 +23,12 @@
   body {
     @apply antialiased;
     background-color: #16181c;
-    /* The hillside/tower/tree scene itself now lives in <PageBackground> as a real inline SVG (see
-       that component) so the trees can sway via CSS animation — a background-image is opaque to
-       page CSS and can't be reached that way. This is just the soft, slightly lighter grey glow
-       behind it, still shared across every page from one place. */
-    background-image: radial-gradient(ellipse 1400px 800px at 50% -10%, rgba(66, 68, 74, 0.35), transparent 70%);
+    /* Soft glow behind the <PageBackground> scene, shared across every page. */
+    background-image: radial-gradient(
+      ellipse 1400px 800px at 50% -10%,
+      rgba(66, 68, 74, 0.35),
+      transparent 70%
+    );
     background-repeat: no-repeat;
     background-position: top center;
     background-size: cover;
@@ -86,20 +85,24 @@
   .label {
     @apply mb-1.5 block text-xs font-medium uppercase tracking-wide text-base-500;
   }
-  /* Shiny metallic wordmark treatment for the "Outpost" brand text — a silver diagonal sheen
-     echoing the logo's own green gradient, but neutral so it doesn't compete with the mark. */
+  /* Shiny metallic wordmark treatment for the "Outpost" brand text. */
   .brand-text {
     @apply bg-gradient-to-tr from-base-500 via-white to-base-300 bg-clip-text text-transparent;
   }
-  /* Same shape/surface as .card, but the flat border is swapped for a brushed-metal gradient edge
-     — silver fading through dark grey — scoped to the dashboard's server grid so the plain .card
-     used everywhere else (settings panels, tabs, etc.) is untouched. */
+  /*
+   * Same shape/surface as .card, but the flat border is swapped for a brushed-metal gradient edge.
+   */
   .server-card {
     @apply rounded-2xl bg-base-900;
     border: 1px solid transparent;
     background-image:
       linear-gradient(#27292e, #27292e),
-      linear-gradient(135deg, rgba(176, 186, 197, 0.55), #42444a 50%, rgba(176, 186, 197, 0.25) 100%);
+      linear-gradient(
+        135deg,
+        rgba(176, 186, 197, 0.55),
+        #42444a 50%,
+        rgba(176, 186, 197, 0.25) 100%
+      );
     background-origin: border-box;
     background-clip: padding-box, border-box;
   }

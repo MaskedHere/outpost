@@ -1,7 +1,7 @@
 import type { GameDefinition } from './types.js';
 
-// renegademaster/zomboid-dedicated-server: free dedicated server depot (SteamCMD app id 380870,
-// no purchase or Steam account required). Confirmed RCON support with a real password/port env.
+// renegademaster/zomboid-dedicated-server: free dedicated server depot (SteamCMD app id 380870, no
+// purchase or Steam account required).
 const IMAGE = 'docker.io/renegademaster/zomboid-dedicated-server';
 
 export const projectZomboidDefinition: GameDefinition = {
@@ -11,13 +11,14 @@ export const projectZomboidDefinition: GameDefinition = {
   versionLabel: null,
   moddable: true,
   moddingKind: 'workshop-items',
+  workshopRequiresModIds: true,
   steamAppId: 108600,
   gamePortProtocol: 'udp',
   // Project Zomboid prints this (all-caps, no punctuation) once the world/save is fully loaded
   // and the server is accepting connections.
   readyLogPattern: /SERVER STARTED/,
-  // ZomboidDedicatedServer holds the SteamCMD-installed game itself; every bit of per-server state
-  // (saves, settings, downloaded Workshop mods) lives under the separate /home/steam/Zomboid volume.
+  // ZomboidDedicatedServer holds the game install; per-server state (saves, settings, Workshop
+  // mods) lives in /home/steam/Zomboid.
   contentCache: { subdir: 'server', approxSizeLabel: '~3 GB' },
   settings: [
     {
@@ -72,9 +73,12 @@ export const projectZomboidDefinition: GameDefinition = {
   players: {
     list: {
       command: 'players',
-      // "Players connected (2):\n-Alice\n-Bob" — no player cap reported by this command.
+      // "Players connected (2):\n-Alice\n-Bob" - no player cap reported by this command.
       parse: (output) => ({
-        players: [...output.matchAll(/^-(.+)$/gm)].map((m) => ({ name: m[1]!.trim(), id: m[1]!.trim() })),
+        players: [...output.matchAll(/^-(.+)$/gm)].map((m) => ({
+          name: m[1]!.trim(),
+          id: m[1]!.trim(),
+        })),
         max: null,
       }),
     },
@@ -83,7 +87,16 @@ export const projectZomboidDefinition: GameDefinition = {
     unban: (player) => `unbanuser ${player.name}`,
   },
 
-  buildContainerSpec({ name, containerName, dataPath, memoryMb, rconPassword, workshopItemIds, modIds, extraSettings }) {
+  buildContainerSpec({
+    name,
+    containerName,
+    dataPath,
+    memoryMb,
+    rconPassword,
+    workshopItemIds,
+    modIds,
+    extraSettings,
+  }) {
     const setting = (key: string, fallback: string) => extraSettings?.[key] ?? fallback;
     const env = [
       `SERVER_NAME=${name.replace(/[^a-zA-Z0-9]/g, '') || 'OutpostServer'}`,
@@ -98,10 +111,9 @@ export const projectZomboidDefinition: GameDefinition = {
     ];
     const joinPassword = setting('SERVER_PASSWORD', '');
     if (joinPassword) env.push(`SERVER_PASSWORD=${joinPassword}`);
-    // Both lists have to line up 1:1 and in the same order — that's how the underlying
-    // WorkshopItems/Mods .ini properties correlate a downloaded Workshop item with the mod
-    // folder(s) it actually contains.
-    if (workshopItemIds && workshopItemIds.length > 0) env.push(`MOD_WORKSHOP_IDS=${workshopItemIds.join(';')}`);
+    // Both lists have to line up 1:1 and in the same order.
+    if (workshopItemIds && workshopItemIds.length > 0)
+      env.push(`MOD_WORKSHOP_IDS=${workshopItemIds.join(';')}`);
     if (modIds && modIds.length > 0) env.push(`MOD_NAMES=${modIds.join(';')}`);
 
     return {

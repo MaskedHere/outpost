@@ -71,7 +71,11 @@ export default function LoginPage() {
 
         {error && <p className="mb-4 text-sm text-red-400">{error}</p>}
 
-        <button type="submit" className="btn-primary w-full transition-transform active:scale-95" disabled={submitting}>
+        <button
+          type="submit"
+          className="btn-primary w-full transition-transform active:scale-95"
+          disabled={submitting}
+        >
           {submitting ? 'Signing in…' : 'Sign in'}
         </button>
       </motion.form>

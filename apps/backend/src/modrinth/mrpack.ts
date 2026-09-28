@@ -10,8 +10,7 @@ const LOADER_DEPENDENCY_KEY: Record<string, string> = {
 
 /**
  * Builds a standard Modrinth .mrpack (a zip with a modrinth.index.json manifest referencing
- * official Modrinth CDN download URLs). Outpost never rehosts mod jars itself, so this is a pure
- * metadata export — friends open the resulting file with the Modrinth App or Prism Launcher.
+ * official Modrinth CDN download URLs).
  */
 export function buildMrpack(
   pack: Pack & { items: PackItem[] },
@@ -23,10 +22,10 @@ export function buildMrpack(
   const loaderKey = LOADER_DEPENDENCY_KEY[pack.loader];
   if (loaderKey && loaderVersion) dependencies[loaderKey] = loaderVersion;
 
-  // "local" items (a jar Outpost has the actual bytes for but never matched on Modrinth — see
+  // "local" items (a jar Outpost has the actual bytes for but never matched on Modrinth - see
   // PackItem.source) have no downloadUrl at all, since there's nowhere on Modrinth's CDN to point
   // to; a pure-URL mrpack has no way to represent them, so they're left out of the export rather
-  // than emitting a broken `downloads: [null]` entry. They still deploy fine directly from Outpost.
+  // than emitting a broken `downloads: [null]` entry.
   const index = {
     formatVersion: 1,
     game: 'minecraft',

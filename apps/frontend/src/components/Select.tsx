@@ -18,7 +18,9 @@ export default function Select({
   placeholder?: string;
   id?: string;
 }) {
-  const normalized: SelectOption[] = options.map((o) => (typeof o === 'string' ? { value: o, label: o } : o));
+  const normalized: SelectOption[] = options.map((o) =>
+    typeof o === 'string' ? { value: o, label: o } : o,
+  );
 
   return (
     <RadixSelect.Root value={value} onValueChange={onChange}>
@@ -28,8 +30,20 @@ export default function Select({
       >
         <RadixSelect.Value placeholder={placeholder} />
         <RadixSelect.Icon>
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="shrink-0 text-base-500">
-            <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="none"
+            className="shrink-0 text-base-500"
+          >
+            <path
+              d="M4 6l4 4 4-4"
+              stroke="currentColor"
+              strokeWidth="1.75"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
           </svg>
         </RadixSelect.Icon>
       </RadixSelect.Trigger>
@@ -50,7 +64,13 @@ export default function Select({
                 <RadixSelect.ItemText>{opt.label}</RadixSelect.ItemText>
                 <RadixSelect.ItemIndicator>
                   <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-                    <path d="M3 8.5l3 3 7-7" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+                    <path
+                      d="M3 8.5l3 3 7-7"
+                      stroke="currentColor"
+                      strokeWidth="1.75"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
                   </svg>
                 </RadixSelect.ItemIndicator>
               </RadixSelect.Item>

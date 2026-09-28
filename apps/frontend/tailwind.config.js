@@ -30,8 +30,7 @@ export default {
           400: '#fb923c',
           500: '#f97316',
         },
-        // Muted, desaturated warn/crit tones for usage meters (CPU/RAM) — deliberately duller than
-        // `ember`/red so a busy server doesn't scream for attention the way a crash or install does.
+        // Muted, desaturated warn/crit tones for usage meters (CPU/RAM)
         warn: {
           400: '#c99361',
           500: '#b8763f',
@@ -54,9 +53,20 @@ export default {
           '0%, 100%': { transform: 'rotate(calc(var(--sway-amp, 1deg) * -1))' },
           '50%': { transform: 'rotate(var(--sway-amp, 1deg))' },
         },
+        // A lit segment travelling along a track, for work with no measurable progress.
+        'log-in': {
+          from: { opacity: '0', transform: 'translateY(-4px)' },
+          to: { opacity: '1', transform: 'translateY(0)' },
+        },
+        sweep: {
+          '0%': { transform: 'translateX(-100%)' },
+          '100%': { transform: 'translateX(500%)' },
+        },
       },
       animation: {
         'tree-sway': 'tree-sway 5s ease-in-out infinite',
+        sweep: 'sweep 1.6s ease-in-out infinite',
+        'log-in': 'log-in 180ms ease-out both',
       },
     },
   },

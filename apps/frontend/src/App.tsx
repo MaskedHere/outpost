@@ -10,6 +10,7 @@ import Dashboard from './pages/Dashboard';
 import CreateServerWizard from './pages/CreateServerWizard';
 import ServerDetail from './pages/ServerDetail';
 import ModpackEditor from './pages/ModpackEditor';
+import WorkshopPackEditor from './pages/WorkshopPackEditor';
 import SettingsPage from './pages/SettingsPage';
 
 function Center({ children }: { children: React.ReactNode }) {
@@ -52,8 +53,7 @@ export default function App() {
   return (
     <>
       <PageBackground animate={effectsOn} />
-      {/* Outside <Routes> so it shows on every screen, including login and first-run setup — those
-          are exactly when you most want to confirm which build is deployed. */}
+      {/* Outside <Routes> so it shows on every screen, including login and first-run setup. */}
       <VersionLabel />
       <Routes>
         <Route path="/setup" element={<SetupPage />} />
@@ -70,6 +70,7 @@ export default function App() {
           <Route path="servers/new" element={<CreateServerWizard />} />
           <Route path="servers/:id" element={<ServerDetail />} />
           <Route path="modpacks/:id" element={<ModpackEditor />} />
+          <Route path="workshop-packs/:id" element={<WorkshopPackEditor />} />
           <Route path="settings" element={<SettingsPage />} />
         </Route>
       </Routes>

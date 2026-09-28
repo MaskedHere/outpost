@@ -1,15 +1,19 @@
 import crypto from 'node:crypto';
 import type { UnresolvedEntry } from '../modrinth/import.js';
 
-// A tiny in-memory job tracker so a slow CurseForge import (resolve → download a possibly
-// 100-200MB file → match hundreds of mods against Modrinth) can report real progress instead of
-// leaving the frontend staring at one opaque, minutes-long request. Deliberately not persisted —
-// an import job that outlives a backend restart isn't meaningful to resume anyway.
+// In-memory job tracker so slow CurseForge imports can report progress instead of blocking on one
+// long request. Not persisted; jobs don't need to survive a restart.
 export type ImportJobStatus =
   | { phase: 'resolving' }
   | { phase: 'downloading'; current: number; total: number }
   | { phase: 'matching'; current: number; total: number }
-  | { phase: 'done'; pack: unknown; format: string; unresolved: UnresolvedEntry[]; clientOnly: UnresolvedEntry[] }
+  | {
+      phase: 'done';
+      pack: unknown;
+      format: string;
+      unresolved: UnresolvedEntry[];
+      clientOnly: UnresolvedEntry[];
+    }
   | { phase: 'error'; error: string };
 
 const jobs = new Map<string, ImportJobStatus>();

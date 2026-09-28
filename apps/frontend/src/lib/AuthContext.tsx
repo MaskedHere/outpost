@@ -29,7 +29,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     refresh().finally(() => setLoading(false));
   }, []);
 
-  return <AuthContext.Provider value={{ status, loading, error, refresh }}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={{ status, loading, error, refresh }}>
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth() {

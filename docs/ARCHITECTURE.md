@@ -1,8 +1,8 @@
 # Architecture
 
-Outpost is one Docker container (the "panel") that manages sibling game-server containers via the
-Docker Engine API. There's no separate agent/daemon process to install — that's the whole point of
-targeting a NAS: one app, one install, done.
+Outpost is one Docker container (the "panel") that manages sibling game-server containers through
+the Docker Engine API. There's no separate agent or daemon to install, which is the point of
+targeting a NAS: one app, one install.
 
 ```
                          ┌─────────────────────────────┐
@@ -13,76 +13,71 @@ targeting a NAS: one app, one install, done.
                                         │ (/var/run/docker.sock)
                         ┌───────────────┼────────────────┐
                         ▼               ▼                ▼
-                 game-server-1   game-server-2     game-server-N
-                (itzg/minecraft- (itzg/minecraft-  (itzg/minecraft-
-                  server image)    server image)     server image)
+                  game server 1   game server 2    game server N
 ```
 
 ## Backend (`apps/backend`)
 
-- **Fastify** HTTP + WebSocket server, TypeScript, single admin-account JWT-cookie auth.
-- **`docker/`** — thin `dockerode` wrapper: create/start/stop/restart/remove a container, and a
-  polling-based CPU/mem stats read (`docker stats`, non-streaming). `containers.ts` builds a
-  container's port bindings, volume mounts, and (if the game needs one) an env-file-style secret
-  from a `CreateContainerSpec` returned by a `GameDefinition` — nothing else in the codebase knows
-  about Docker specifics.
-- **`games/`** — the "game definition" seam (see `games/types.ts`). Each file maps a
-  variant/version/memory choice into a `CreateContainerSpec` (image, ports, volumes, env/cmd) for
-  one Docker image, and registers in `games/registry.ts` — nothing in `routes/` or the frontend
-  has to change to add another. Shipped today: Minecraft (`itzg/minecraft-server`, incl. a
-  BungeeCord/Waterfall/Velocity proxy variant via `itzg/mc-proxy`), Terraria, Factorio, Valheim,
-  Garry's Mod, Team Fortress 2, 7 Days to Die, and Project Zomboid — all free-to-run (no paid
-  Steam account or purchase required for the dedicated server itself). A few of these needed a
-  `preCreate` hook (writes a file into the bind-mounted volume *before* the container starts) for
-  images whose entrypoint only picks up a generated secret from a config file rather than an env
-  var — see `factorio.ts`'s `rconpw` handling.
-- **`rcon/client.ts`** — a from-scratch client for Valve's Source RCON wire protocol. Minecraft's
-  RCON is a direct copy of the same format, so this one client covers every RCON-capable game
-  Outpost supports (Minecraft, Factorio, Garry's Mod, TF2, Project Zomboid), connecting straight
-  over the network to the container's published RCON port rather than shelling into it. Not every
-  game has RCON (Valheim has no admin console at all; Terraria's vanilla server needs a real TTY
-  that this environment can't reliably attach to, and 7 Days to Die's available Docker images
-  don't expose one) — those are logs-only: `GameServer.rconPort` is `null` and the console tab
-  just tails `docker logs -f` with no command input.
-- **`modrinth/`** — a small client for the public [Modrinth API](https://docs.modrinth.com/api/),
-  a required-dependency resolver, best-effort mod-loader-version lookup (Fabric/Quilt meta APIs),
-  the `.mrpack` builder, and `import.ts` (parses an uploaded `.mrpack`, CurseForge zip, or plain
-  zip of `.jar`s back into an editable `Pack` — CurseForge packs are matched to Modrinth projects
-  by name since Outpost has no CurseForge API key and only ever redistributes via Modrinth's CDN).
-- **`routes/`** — REST endpoints plus one WebSocket route (`/ws/servers/:id/console`) for the live
-  console. Output always streams from `docker logs -f` (`docker/cli.ts` spawns the CLI directly —
-  dockerode's own `attach()`/`logs()` streams never reliably delivered data on the Docker
-  transports this was tested against, while shelling out to the bundled `docker` CLI does).
-  Commands go in via `rcon/client.ts` when `rconPort` is set.
-- Server data (`/data/servers/<id>`) is bind-mounted straight from the host into both the panel
-  container (for the file manager/backups) and the game-server container — no copying, no exec-ing
-  into containers for file access. (One exception: Team Fortress 2's image bakes its entrypoint
-  and installed server directly into the path it'd otherwise need mounted, so that one has no
-  persistent volume in v1 — it still runs and has a live console, it just won't survive container
-  recreation or show up in Files/Backups.)
+- **Fastify** HTTP and WebSocket server in TypeScript, with single-admin JWT cookie auth.
+- **`docker/`** is a thin `dockerode` wrapper: container lifecycle, polling CPU/memory stats, and
+  port/volume/secret wiring built from a `CreateContainerSpec`. Nothing else in the codebase knows
+  Docker specifics.
+- **`games/`** holds one `GameDefinition` per game (see `games/types.ts`). Each maps a variant,
+  version, memory, and settings choice to a `CreateContainerSpec` (image, ports, volumes, env, cmd)
+  and registers in `games/registry.ts`; routes and the frontend don't change when a game is added.
+  Supported today: Minecraft Java (`itzg/minecraft-server`, including a Velocity/Waterfall/BungeeCord
+  proxy via `itzg/mc-proxy`), Minecraft Bedrock, Terraria and tModLoader, Factorio, Valheim,
+  Palworld, Team Fortress 2, 7 Days to Die, and Project Zomboid. Some images only read a generated
+  secret or config from a file, so definitions can declare a `preCreate` hook that writes into the
+  bind-mounted volume before the container starts (see Factorio's `rconpw`).
+- **`rcon/client.ts`** is a from-scratch client for Valve's binary Source RCON protocol. Minecraft
+  copied the same wire format, so one client covers Minecraft, Factorio, TF2, Project Zomboid, and
+  Palworld, connecting over the network to each container's published RCON port. Games without
+  RCON (Valheim, Terraria, 7 Days to Die, Bedrock) are logs-only: `GameServer.rconPort` is `null`
+  and the console has no command input.
+- **`modrinth/`** contains the Modrinth API client, a required-dependency resolver, loader-version
+  lookup for export, the `.mrpack` builder, and `import.ts`, which turns an uploaded `.mrpack`,
+  CurseForge pack, or zip of jars back into an editable `Pack`. Jars bundled in an upload are matched
+  against Modrinth by SHA-1 hash; anything unrecognized is kept and deployed as a local file.
+- **`curseforge/`** reads CurseForge through a headless Chromium (Playwright), since its search
+  pages sit behind a bot challenge and its API requires a key.
+- **`routes/`** exposes the REST API plus one WebSocket route (`/ws/servers/:id/console`). Console
+  output streams from `docker logs -f` via the bundled CLI (`docker/cli.ts`), because `dockerode`'s
+  attach/log streams didn't reliably deliver data on the Docker transports tested. Commands go in
+  over RCON when the game has it.
+- **`services/`** holds the long-running logic: readiness detection, crash recovery, the shared
+  game-content cache, player tracking, and the public-access options (UPnP, playit.gg,
+  bore).
+- Server data (`/data/servers/<id>`) is bind-mounted into both the panel (for the file manager and
+  backups) and the game container, so there's no copying or exec-ing into containers for file
+  access. The exception is Team Fortress 2, whose image bakes its server into the path it would
+  need mounted, so TF2 servers have no persistent volume.
 
 ## Frontend (`apps/frontend`)
 
-React + Vite + TypeScript + Tailwind, built to static files and served by the backend in
-production so the whole app is one container/one port. `xterm.js` renders the live console.
+React, Vite, TypeScript, and Tailwind, built to static files and served by the backend in
+production, so the whole app is one container on one port.
 
-## Modpack Studio → "share with friends" flow
+## Modpack flow
 
-1. User searches Modrinth and adds mods to a `Pack` (SQLite). Adding a mod resolves its full
-   *required*-dependency tree up front and pins each one to a specific Modrinth version — Outpost
-   never asks the runtime image to resolve dependencies itself.
-2. **Deploy**: creates a real server whose container gets `MODRINTH_PROJECTS=<comma-separated
-   version ids>` — the itzg image downloads and installs them at boot.
-3. **Share (.mrpack)**: streams a standard [`.mrpack`](https://docs.modrinth.com/modpacks/format/)
-   zip — a `modrinth.index.json` manifest pointing at official Modrinth CDN URLs, no rehosted jars.
-   Friends open it with the Modrinth App or Prism Launcher and it just installs.
+1. Search Modrinth or CurseForge and add mods to a `Pack`. Adding a mod resolves its full required
+   dependency tree up front and pins each dependency to a specific version, so the runtime image
+   never resolves dependencies on its own.
+2. **Deploy** creates a server whose container gets `MODRINTH_PROJECTS=<project:version,...>`; the
+   itzg image downloads them at boot. Mods Outpost already holds as files are copied into the
+   server's `mods/` folder instead.
+3. **Share** streams a standard [`.mrpack`](https://docs.modrinth.com/modpacks/format/): a
+   `modrinth.index.json` manifest pointing at Modrinth's CDN, with no rehosted jars. Friends open it
+   in the Modrinth App or Prism Launcher.
 
-## Data layout on the host
+## Data layout
 
-| Path (inside container) | Host path (ZimaOS) | Purpose |
-|---|---|---|
-| `/data/config` | `/DATA/AppData/outpost/config` | SQLite DB |
-| `/data/servers/<id>` | `/DATA/AppData/outpost/servers/<id>` | one server's world/config files |
-| `/data/backups/<id>` | `/DATA/AppData/outpost/backups/<id>` | tar.gz snapshots |
+| Path (inside container) | Host path (ZimaOS)                    | Purpose                              |
+| ----------------------- | ------------------------------------- | ------------------------------------ |
+| `/data/config`          | `/DATA/AppData/outpost/config`        | SQLite database                      |
+| `/data/servers/<id>`    | `/DATA/AppData/outpost/servers/<id>`  | One server's world and config files  |
+| `/data/backups/<id>`    | `/DATA/AppData/outpost/backups/<id>`  | `tar.gz` snapshots                   |
+| `/data/packs`           | `/DATA/AppData/outpost/packs`         | Stored mod files and pack overrides  |
+| `/data/game-cache`      | `/DATA/AppData/outpost/game-cache`    | Shared per-game SteamCMD content     |
 
-See the [README](../README.md) for what's deliberately out of scope for v1.
+See the [README](../README.md) for the roadmap.

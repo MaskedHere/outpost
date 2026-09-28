@@ -1,8 +1,7 @@
 # syntax=docker/dockerfile:1
 
-# Playwright would normally download its own Chromium on install. The runtime image below uses
-# Alpine's system chromium package instead (see CHROMIUM_PATH), so skip that download everywhere —
-# it's ~150MB per stage that would otherwise be built and then thrown away.
+# The runtime image uses Alpine's system Chromium (see CHROMIUM_PATH), so skip Playwright's own
+# ~150MB browser download in every stage.
 FROM node:22-alpine AS deps
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 RUN apk add --no-cache openssl
@@ -36,10 +35,8 @@ ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV CHROMIUM_PATH=/usr/bin/chromium-browser
 
 COPY --from=deps /app/node_modules ./node_modules
-# npm workspaces hoists most dependencies to the root node_modules, but not all of them — anything
-# with a conflicting version requirement stays nested under the workspace itself (dockerode and its
-# tar-stream chain do). Copying only the root left the built server unable to resolve dockerode at
-# runtime, so this second tree is required, not belt-and-braces.
+# npm workspaces don't hoist dependencies with conflicting version requirements (dockerode and its
+# tar-stream chain stay nested), so the backend's own node_modules is needed at runtime too.
 COPY --from=deps /app/apps/backend/node_modules ./apps/backend/node_modules
 COPY --from=build /app/apps/backend/dist ./apps/backend/dist
 COPY --from=build /app/apps/backend/generated ./apps/backend/generated

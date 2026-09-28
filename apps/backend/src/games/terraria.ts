@@ -1,30 +1,34 @@
 import type { GameDefinition } from './types.js';
 
 // ghcr.io/beardedio/terraria: https://github.com/beardedio/terraria
-// Vanilla Terraria has no RCON and its dedicated server needs a real TTY for its interactive
-// console (confirmed: the image's own docs note a NullReferenceException without one) — so
-// Outpost never attaches to its stdin, and this is logs-only. The image's own entrypoint refuses
-// to start at all if the `world` env var points at a file that doesn't exist yet, so first boot
-// is done by deliberately NOT setting `world` and instead passing -autocreate/-world/-worldname
-// directly as launch args, which TerrariaServer itself handles non-interactively.
+// Vanilla Terraria has no RCON and its console needs a real TTY, so this server is logs-only. The
+// first world is created with -autocreate launch args, because the entrypoint refuses to start when
+// `world` points at a missing file.
 const IMAGE = 'ghcr.io/beardedio/terraria:vanilla-latest';
+
+// jacobsmile/tmodloader1.4: https://github.com/JACOBSMILE/tmodloader1.4
+// Vanilla Terraria cannot load mods at all, and the image above publishes only vanilla and TShock
+// tags.
+const TMODLOADER_IMAGE = 'jacobsmile/tmodloader1.4:latest';
 
 export const terrariaDefinition: GameDefinition = {
   id: 'terraria',
   displayName: 'Terraria',
-  variants: ['default'],
+  variants: ['default', 'tmodloader'],
+  variantLabels: { default: 'Vanilla', tmodloader: 'tModLoader' },
   versionLabel: null,
-  moddable: false,
+  moddable: true,
+  moddingKind: 'workshop-items',
+  moddedVariants: ['tmodloader'],
+  // tModLoader enables mods by their Workshop ID, so there is no second identifier to ask for.
+  workshopRequiresModIds: false,
   steamAppId: 105600,
+  // Terraria's Workshop holds worlds and resource packs; tModLoader mods live under tModLoader's
+  // own app id, which TMOD_AUTODOWNLOAD expects.
+  workshopAppId: 1281930,
   gamePortProtocol: 'tcp',
-  // No RCON means the generic readiness check would otherwise fall back to raw-TCP-probing the
-  // game port itself — which for Terraria is actively harmful, not just a wasted check: the
-  // server treats *any* new TCP connection on 7777 as a player connecting, so every poll made it
-  // log "<host> is connecting...", immediately drop the "player" moments later, and run a full
-  // save/validate/backup cycle in response — confirmed live via `docker logs`, where this produced
-  // an unbroken loop of save cycles a few seconds apart. "Server started" is the line
-  // TerrariaServer itself prints once the world's finished loading and it's actually accepting
-  // connections, so matching that avoids ever touching the game port for a health check.
+  // No RCON means the generic readiness check would otherwise fall back to raw-TCP-probing the game
+  // port itself.
   readyLogPattern: /Server started/,
   settings: [
     {
@@ -76,22 +80,72 @@ export const terrariaDefinition: GameDefinition = {
     },
   ],
 
-  buildContainerSpec({ name, containerName, dataPath, memoryMb, rconPassword, extraSettings }) {
+  buildContainerSpec({
+    name,
+    containerName,
+    dataPath,
+    memoryMb,
+    variant,
+    rconPassword,
+    workshopItemIds,
+    extraSettings,
+  }) {
     const setting = (key: string, fallback: string) => extraSettings?.[key] ?? fallback;
-    // Terraria takes everything as launch args — there are no env vars to set here.
+    const joinPassword = setting('password', '') || rconPassword.slice(0, 12);
+
+    if (variant === 'tmodloader') {
+      // Downloading a mod and enabling it are separate lists in this image.
+      const ids = (workshopItemIds ?? []).join(',');
+      const env = [
+        'TMOD_PORT=7777',
+        `TMOD_MAXPLAYERS=${setting('maxplayers', '8')}`,
+        `TMOD_PASS=${joinPassword}`,
+        `TMOD_MOTD=${name}`,
+        'TMOD_WORLDNAME=world',
+        // Same 1/2/3 and 0-3 scales the vanilla launch args use, so the shared settings above carry
+        // over to this variant unchanged.
+        `TMOD_WORLDSIZE=${setting('autocreate', '1')}`,
+        `TMOD_DIFFICULTY=${setting('difficulty', '0')}`,
+      ];
+      if (ids) {
+        env.push(`TMOD_AUTODOWNLOAD=${ids}`);
+        env.push(`TMOD_ENABLEDMODS=${ids}`);
+      }
+
+      return {
+        image: TMODLOADER_IMAGE,
+        containerName,
+        env,
+        ports: [{ containerPort: 7777, protocol: 'tcp', purpose: 'game' }],
+        // This image keeps worlds and the Workshop mod cache under /data, not the vanilla /config.
+        volumes: [{ hostSubdir: '', containerPath: '/data' }],
+        memoryMb,
+        dataPath,
+      };
+    }
+
+    // Terraria takes everything as launch args.
     return {
       image: IMAGE,
       containerName,
       env: [],
       cmd: [
-        '-world', '/config/world.wld',
-        '-autocreate', setting('autocreate', '1'),
-        '-worldname', 'world',
-        '-difficulty', setting('difficulty', '0'),
-        '-maxplayers', setting('maxplayers', '8'),
-        '-port', '7777',
-        '-password', setting('password', '') || rconPassword.slice(0, 12),
-        '-motd', name,
+        '-world',
+        '/config/world.wld',
+        '-autocreate',
+        setting('autocreate', '1'),
+        '-worldname',
+        'world',
+        '-difficulty',
+        setting('difficulty', '0'),
+        '-maxplayers',
+        setting('maxplayers', '8'),
+        '-port',
+        '7777',
+        '-password',
+        joinPassword,
+        '-motd',
+        name,
       ],
       ports: [{ containerPort: 7777, protocol: 'tcp', purpose: 'game' }],
       volumes: [{ hostSubdir: '', containerPath: '/config' }],

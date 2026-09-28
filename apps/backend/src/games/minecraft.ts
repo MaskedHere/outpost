@@ -1,27 +1,13 @@
 import type { GameDefinition } from './types.js';
 
 // itzg/docker-minecraft-server: https://github.com/itzg/docker-minecraft-server
-// Battle-tested image that already handles EULA, vanilla/Paper/Fabric/Forge/NeoForge/Quilt
-// startup, JVM flags, and installing a list of Modrinth project versions via MODRINTH_PROJECTS.
-// We deliberately don't reimplement any of that ourselves.
-//
-// The image does NOT auto-detect which Java runtime a given Minecraft version needs — `:latest`
-// always bundles the newest Java the image ships (Java 25 as of this writing). Point an old
-// modded server (e.g. Forge 1.19.2, which needs Java 17) at `:latest` and Mixin/ASM can't even
-// parse the JDK's own class files ("Unsupported class file major version"), so it crash-loops on
-// every boot forever instead of actually being slow. We have to pick the matching `:javaNN` tag
-// ourselves, based on Mojang's published minimum Java version per Minecraft release:
-// https://minecraft.wiki/w/Tutorial:Update_Java
+// Handles the EULA, server-type startup (vanilla/Paper/Fabric/Forge/NeoForge/Quilt), JVM flags, and
+// Modrinth installs via MODRINTH_PROJECTS.
 function javaImageTag(version: string, variant: string): string {
   const m = version.match(/^(\d+)\.(\d+)(?:\.(\d+))?/);
   if (!m) return 'java21'; // "LATEST"/"SNAPSHOT"/unparseable — assume a current version
   const major = Number(m[1]);
-  // Mojang dropped the "1." version prefix at some point (e.g. "26.2") — every one of those releases
-  // is newer than anything the tiered checks below were written for, so treating a non-1.x major as
-  // if it were an ancient "1.<major>.<minor>" release (this bug: "26.2" parsed as major=1 minor=26,
-  // landing on java8) is exactly backwards. Confirmed directly against a live "26.2" boot failure
-  // ("class file version 69.0" — that's Java 25) that java21 alone isn't new enough either, so
-  // anything outside the legacy 1.x scheme gets the newest tag itzg's image ships.
+  // Mojang dropped the "1." version prefix at some point (e.g. "26.2")
   if (major !== 1) return 'java25';
   const minor = Number(m[2]);
   const patch = Number(m[3] ?? '0');
@@ -52,16 +38,14 @@ export const minecraftDefinition: GameDefinition = {
   moddingKind: 'minecraft',
   moddedVariants: ['fabric', 'forge', 'neoforge', 'quilt'],
   gamePortProtocol: 'tcp',
-  // The line every Minecraft server (vanilla/Paper/Fabric/Forge alike) prints once the world has
-  // finished loading and it's actually accepting players, e.g. `Done (12.345s)! For help, type "help"`.
+  // Printed by every Minecraft server once the world has loaded, e.g. `Done (12.345s)! For help,
+  // type "help"`.
   readyLogPattern: /Done \([\d.]+s\)!/,
-  // itzg's image logs one of these while a modded server's loader installer (Forge/NeoForge/
-  // Fabric/Quilt) is still fetching its library jars, or while requested Modrinth mods are still
-  // downloading — both can take several minutes on a first boot with nothing cached yet.
+  // Logged while a mod loader installer is fetching its libraries or Modrinth mods are still
+  // downloading.
   installingLogPattern: /\binstaller\b|Downloading (mod|MODRINTH)/i,
   // Each key is an itzg env var that maps straight to the matching server.properties line
-  // (MAX_PLAYERS -> max-players, and so on) — see buildContainerSpec, which passes these through
-  // verbatim.
+  // (MAX_PLAYERS -> max-players, and so on)
   settings: [
     {
       key: 'MAX_PLAYERS',
@@ -197,15 +181,16 @@ export const minecraftDefinition: GameDefinition = {
     list: {
       command: 'list',
       parse: (output) => {
-        // "There are 2 of a max of 20 players online: Alice, Bob" (or no trailing ": ..." at 0).
-        const header = output.match(/There are (\d+) of a max of (\d+) players online/i);
+        // "There are 2 of a max of 20 players online: Alice, Bob" (no trailing ": ..." when empty).
+        const header = output.match(/There are (\d+) of(?: a)? max of (\d+) players online/i);
         const max = header ? Number(header[2]) : null;
         const names = output.match(/players online:\s*(.+)/i);
         if (!names?.[1]) return { players: [], max };
         const players = names[1]
           .split(',')
           .map((name) => name.trim())
-          .filter(Boolean)
+          // Minecraft usernames are strictly 1-16 word characters.
+          .filter((name) => /^\w{1,16}$/.test(name))
           .map((name) => ({ name, id: name }));
         return { players, max };
       },
@@ -215,19 +200,29 @@ export const minecraftDefinition: GameDefinition = {
     kill: (player) => `kill ${player.name}`,
     banned: {
       command: 'banlist',
-      // RCON's banlist response has no separator between entries at all — each ban reason runs
-      // straight into the next player's name with no space (confirmed live: "...banned by an
-      // operator.Notch was banned by..."). A plain \S+ would grab "operator.Notch" as one name.
-      // Minecraft usernames are strictly alphanumeric/underscore, so matching that exact charset
-      // instead of \S+ correctly stops at the real name boundary regardless of what's next to it.
-      parse: (output) => [...output.matchAll(/([A-Za-z0-9_]{1,16}) was banned by/g)].map((m) => ({ name: m[1]!, id: m[1]! })),
+      // RCON's banlist response has no separator between entries at all.
+      parse: (output) =>
+        [...output.matchAll(/([A-Za-z0-9_]{1,16}) was banned by/g)].map((m) => ({
+          name: m[1]!,
+          id: m[1]!,
+        })),
     },
     unban: (player) => `pardon ${player.name}`,
     op: (player) => `op ${player.name}`,
     deop: (player) => `deop ${player.name}`,
   },
 
-  buildContainerSpec({ containerName, dataPath, memoryMb, variant, version, rconPassword, modrinthMods, motd, extraSettings }) {
+  buildContainerSpec({
+    containerName,
+    dataPath,
+    memoryMb,
+    variant,
+    version,
+    rconPassword,
+    modrinthMods,
+    motd,
+    extraSettings,
+  }) {
     const type = VARIANT_TO_TYPE[variant];
     if (!type) {
       throw new Error(`Unknown Minecraft variant: ${variant}`);
@@ -240,13 +235,11 @@ export const minecraftDefinition: GameDefinition = {
       `MEMORY=${memoryMb}M`,
       'ENABLE_RCON=true',
       `RCON_PASSWORD=${rconPassword}`,
-      // We resolve dependency versions ourselves (see modrinth/dependencies.ts), so tell the
-      // image not to try to resolve them again on its own.
+      // Dependency versions are already resolved by Outpost (see modrinth/dependencies.ts), so the
+      // image shouldn't resolve them again.
       'MODRINTH_DOWNLOAD_DEPENDENCIES=none',
       // Modern NeoForge/Forge (21.x+) default to a graphical "early loading" splash window that
-      // needs LWJGL/OpenGL — nonexistent in a headless server container, so it throws
-      // ClassNotFoundException: org.lwjgl.Version and crash-loops forever right after a successful
-      // install. This flag (NeoForge's documented headless-server fix) disables that window.
+      // needs LWJGL/OpenGL.
       'JVM_OPTS=-Dfml.earlyprogresswindow=false',
     ];
 
@@ -254,13 +247,13 @@ export const minecraftDefinition: GameDefinition = {
 
     if (modrinthMods && modrinthMods.length > 0) {
       // itzg's image expects each entry as "<project id>:<version id>", not a bare version id.
-      env.push(`MODRINTH_PROJECTS=${modrinthMods.map((m) => `${m.projectId}:${m.versionId}`).join(',')}`);
+      env.push(
+        `MODRINTH_PROJECTS=${modrinthMods.map((m) => `${m.projectId}:${m.versionId}`).join(',')}`,
+      );
     }
 
     // itzg's image maps any of these straight to the matching server.properties key (ALLOW_FLIGHT
-    // -> allow-flight, etc.) — see the `settings` array above for the ones Outpost exposes. Empty
-    // values are dropped rather than passed as an empty env var, so a blank "world seed" field
-    // means "random" instead of pinning the seed to the literal empty string.
+    // -> allow-flight, etc.)
     for (const [key, value] of Object.entries(extraSettings ?? {})) {
       if (value !== '') env.push(`${key}=${value}`);
     }

@@ -1,10 +1,7 @@
 import type { GameDefinition } from './types.js';
 
 // lloesche/valheim-server: https://github.com/lloesche/valheim-server-docker
-// The de facto standard Valheim server image — handles SteamCMD updates, world backups, and
-// BepInEx/ValheimPlus mod support. Valheim's dedicated server has no admin console or RCON at
-// all (it's designed to run fully headless), so this is logs-only: no rconPort is set, and the
-// console tab just tails output.
+// The de facto standard Valheim server image.
 const IMAGE = 'lloesche/valheim-server';
 
 export const valheimDefinition: GameDefinition = {
@@ -15,11 +12,10 @@ export const valheimDefinition: GameDefinition = {
   moddable: false,
   steamAppId: 892970,
   gamePortProtocol: 'udp',
-  // lloesche's own image healthchecks off this exact line — it's what the entrypoint logs once
-  // the world has loaded and the server has registered itself with Steam's server list.
+  // lloesche's own image healthchecks off this exact line.
   readyLogPattern: /Game server connected/,
-  // /opt/valheim is where lloesche's image installs the SteamCMD-downloaded server binaries; all
-  // per-server state (worlds, backups, mod config) lives in the separate /config volume.
+  // /opt/valheim holds the SteamCMD server install; per-server state (worlds, backups, mod config)
+  // lives in /config.
   contentCache: { subdir: 'server', approxSizeLabel: '~1.5 GB' },
   settings: [
     {
@@ -33,7 +29,7 @@ export const valheimDefinition: GameDefinition = {
     {
       key: 'SERVER_PUBLIC',
       label: 'List publicly',
-      info: 'Off by default. On, the server appears in Valheim\'s in-game community browser — anyone can find it, though the password still applies. Off means players join by entering the address directly.',
+      info: "Off by default. On, the server appears in Valheim's in-game community browser — anyone can find it, though the password still applies. Off means players join by entering the address directly.",
       type: 'toggle',
       default: 'false',
       onValue: 'true',
@@ -77,17 +73,15 @@ export const valheimDefinition: GameDefinition = {
 
   buildContainerSpec({ name, containerName, dataPath, memoryMb, rconPassword, extraSettings }) {
     const setting = (key: string, fallback: string) => extraSettings?.[key] ?? fallback;
-    // Valheim has no RCON, but every server still gets a random rconPassword generated — reusing
-    // it here as the join password means each server gets a real per-server secret (visible on
-    // the server's detail page) instead of a hardcoded one everybody would share.
+    // Valheim has no RCON, but every server still gets a random rconPassword generated.
     return {
       image: IMAGE,
       containerName,
       env: [
         `SERVER_NAME=${name}`,
         `WORLD_NAME=${setting('WORLD_NAME', 'Dedicated')}`,
-        // Valheim refuses to boot on a password shorter than 5 characters, so an empty or too-short
-        // custom one falls back to the generated secret rather than producing a server that won't start.
+        // Valheim rejects passwords shorter than 5 characters, so a short or empty custom password
+        // falls back to the generated secret.
         `SERVER_PASS=${setting('SERVER_PASS', '').length >= 5 ? setting('SERVER_PASS', '') : rconPassword.slice(0, 10)}`,
         `SERVER_PUBLIC=${setting('SERVER_PUBLIC', 'false')}`,
         `SERVER_PRESET=${setting('SERVER_PRESET', 'normal')}`,

@@ -7,11 +7,11 @@ import { currentMapLabel } from '../lib/currentMapLabel';
 import StatusBadge from '../components/StatusBadge';
 import PlayerCount from '../components/PlayerCount';
 import InstallProgressBar from '../components/InstallProgressBar';
+import BootProgress from '../components/BootProgress';
 import Skeleton from '../components/Skeleton';
 import { pageVariants, staggerContainer, staggerItem } from '../lib/motion';
 
-// Muted usage-severity coloring for CPU/RAM readouts — a whisper of dark orange/red as a server
-// gets close to maxing out, deliberately duller than the ember/red used for install/crash states.
+// Muted usage-severity coloring for CPU/RAM readouts.
 function usageColorClass(percent: number): string {
   if (percent >= 90) return 'text-crit-400';
   if (percent >= 70) return 'text-warn-400';
@@ -19,8 +19,7 @@ function usageColorClass(percent: number): string {
 }
 
 // Traces the real server-card's own layout (banner area, title+badge row, stats row) with pulsing
-// placeholders instead of a bare "Loading…" — reads as "your servers are about to appear here"
-// rather than "something is happening, somewhere, format unknown".
+// placeholders instead of a bare "Loading…".
 function SkeletonServerCard({ square }: { square: boolean }) {
   return (
     <div className={`server-card flex flex-col overflow-hidden ${square ? 'aspect-square' : ''}`}>
@@ -64,9 +63,8 @@ export default function Dashboard() {
     return saved === 'list' || saved === 'square' ? saved : 'default';
   });
 
-  // The periodic poll below and an explicit post-action load() (e.g. right after a delete) can
-  // land in flight at the same time and resolve out of order — without a sequence guard, an older
-  // response landing last would silently clobber fresher state (a deleted server flashing back in).
+  // The periodic poll below and an explicit post-action load() (e.g. right after a delete) can land
+  // in flight at the same time and resolve out of order.
   const loadSeq = useRef(0);
   const load = () => {
     const seq = ++loadSeq.current;
@@ -95,8 +93,8 @@ export default function Dashboard() {
   }, [layout]);
 
   const running = servers?.filter((s) => s.status?.running) ?? [];
-  // Each server reports its share of the whole machine, so the sum is naturally bounded -- but the
-  // samples are taken at slightly different moments, so clamp rather than let skew print "100.4%".
+  // Each server reports its share of the whole machine, but samples are taken at slightly different
+  // moments, so clamp to avoid values like "100.4%".
   const totalCpu = Math.min(
     100,
     running.reduce((sum, s) => sum + (s.status?.cpuPercent ?? 0), 0),
@@ -119,13 +117,14 @@ export default function Dashboard() {
   const deleteSelected = () => {
     const ids = [...selected];
     // Remove from local state immediately so the exit animation plays the instant "Confirm delete"
-    // is pressed, instead of waiting on the network round trip — the actual deletes happen in the
-    // background and load() reconciles with the server once they settle either way.
+    // is pressed, instead of waiting on the network round trip.
     setServers((prev) => prev?.filter((s) => !ids.includes(s.id)) ?? prev);
     setSelected(new Set());
     setConfirmingBulkDelete(false);
     Promise.all(ids.map((id) => serversApi.remove(id, false)))
-      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to delete one or more servers'))
+      .catch((e) =>
+        setError(e instanceof Error ? e.message : 'Failed to delete one or more servers'),
+      )
       .finally(load);
   };
 
@@ -176,7 +175,9 @@ export default function Dashboard() {
               <button
                 title="Default view"
                 className={`rounded-md p-1.5 transition-colors ${
-                  layout === 'default' ? 'bg-base-700 text-base-50' : 'text-base-500 hover:text-base-200'
+                  layout === 'default'
+                    ? 'bg-base-700 text-base-50'
+                    : 'text-base-500 hover:text-base-200'
                 }`}
                 onClick={() => setLayout('default')}
               >
@@ -185,7 +186,9 @@ export default function Dashboard() {
               <button
                 title="List view"
                 className={`rounded-md p-1.5 transition-colors ${
-                  layout === 'list' ? 'bg-base-700 text-base-50' : 'text-base-500 hover:text-base-200'
+                  layout === 'list'
+                    ? 'bg-base-700 text-base-50'
+                    : 'text-base-500 hover:text-base-200'
                 }`}
                 onClick={() => setLayout('list')}
               >
@@ -194,7 +197,9 @@ export default function Dashboard() {
               <button
                 title="Square view"
                 className={`rounded-md p-1.5 transition-colors ${
-                  layout === 'square' ? 'bg-base-700 text-base-50' : 'text-base-500 hover:text-base-200'
+                  layout === 'square'
+                    ? 'bg-base-700 text-base-50'
+                    : 'text-base-500 hover:text-base-200'
                 }`}
                 onClick={() => setLayout('square')}
               >
@@ -283,107 +288,130 @@ export default function Dashboard() {
         className={GRID_CLASS[layout]}
       >
         <AnimatePresence mode="popLayout">
-        {servers?.map((server, index) => {
-          const ramPercent = server.memoryMb > 0 ? (server.status?.memoryUsedMb ?? 0) / server.memoryMb * 100 : 0;
-          const isSelecting = selected.size > 0;
-          const isSelected = selected.has(server.id);
-          return (
-            <motion.div
-              key={server.id}
-              layout
-              variants={staggerItem}
-              initial="initial"
-              animate="animate"
-              exit="exit"
-              whileHover={{ y: -3 }}
-              whileTap={{ scale: 0.99 }}
-              className="group relative"
-            >
-              {/* iOS-style "jiggle mode": once anything is selected, every OTHER card wobbles in
-                  place (slightly out of phase per card, like springboard icons) as a "still picking?"
-                  cue, while the selected one(s) go still — a clear visual "this one's locked in". */}
+          {servers?.map((server, index) => {
+            const ramPercent =
+              server.memoryMb > 0
+                ? ((server.status?.memoryUsedMb ?? 0) / server.memoryMb) * 100
+                : 0;
+            const isSelecting = selected.size > 0;
+            const isSelected = selected.has(server.id);
+            return (
               <motion.div
-                animate={isSelecting && !isSelected ? { rotate: [-1.4, 1.4] } : { rotate: 0 }}
-                transition={
-                  isSelecting && !isSelected
-                    ? { repeat: Infinity, repeatType: 'mirror', duration: 0.14, ease: 'easeInOut', delay: (index % 4) * 0.035 }
-                    : { duration: 0.15 }
-                }
+                key={server.id}
+                layout
+                variants={staggerItem}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                whileHover={{ y: -3 }}
+                whileTap={{ scale: 0.99 }}
+                className="group relative"
               >
-              <motion.label
-                className={`absolute left-3 top-3 z-10 flex h-7 w-7 items-center justify-center rounded-lg bg-base-950/70 backdrop-blur-sm transition-opacity ${
-                  selected.has(server.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-                }`}
-                animate={shakingId === server.id ? shakeAnimation : { x: 0 }}
-                transition={{ duration: 0.4 }}
-                onAnimationComplete={() => {
-                  if (shakingId === server.id) setShakingId(null);
-                }}
-              >
-                <input
-                  type="checkbox"
-                  className="checkbox"
-                  checked={selected.has(server.id)}
-                  onChange={(e) => toggleSelect(server.id, e.target.checked)}
-                />
-              </motion.label>
-              <Link
-                to={`/servers/${server.id}`}
-                className={`server-card flex flex-col overflow-hidden ${layout === 'square' ? 'aspect-square' : ''}`}
-              >
-                <div className={layout === 'square' ? 'relative min-h-0 flex-1' : 'relative h-20 shrink-0'}>
-                  <AnimatePresence>
-                    {(server.mapBannerUrl ?? gameDef(server)?.bannerUrl) && (
-                      <motion.img
-                        key={server.mapBannerUrl ?? gameDef(server)?.bannerUrl}
-                        src={server.mapBannerUrl ?? gameDef(server)!.bannerUrl!}
-                        alt=""
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        transition={{ duration: 0.5 }}
-                        className="absolute inset-0 h-full w-full object-cover"
-                        onError={(e) => {
-                          const fallback = gameDef(server)?.bannerUrl;
-                          if (fallback && e.currentTarget.src !== fallback)
-                            e.currentTarget.src = fallback;
-                        }}
-                      />
-                    )}
-                  </AnimatePresence>
-                  <div className="absolute inset-0 bg-gradient-to-b from-base-950/85 via-base-950/45 to-transparent" />
-                  <div className="relative flex h-full items-start justify-between p-4">
-                    <div className="min-w-0 pl-7">
-                      <h2 className="truncate font-medium text-base-50">{server.name}</h2>
-                      <p className="truncate text-xs text-base-300">{gameLabel(server)}</p>
+                {/* "Jiggle mode": while anything is selected, unselected cards wobble slightly out of
+                 phase and selected cards stay still. */}
+                <motion.div
+                  animate={isSelecting && !isSelected ? { rotate: [-1.4, 1.4] } : { rotate: 0 }}
+                  transition={
+                    isSelecting && !isSelected
+                      ? {
+                          repeat: Infinity,
+                          repeatType: 'mirror',
+                          duration: 0.14,
+                          ease: 'easeInOut',
+                          delay: (index % 4) * 0.035,
+                        }
+                      : { duration: 0.15 }
+                  }
+                >
+                  <motion.label
+                    className={`absolute left-3 top-3 z-10 flex h-7 w-7 items-center justify-center rounded-lg bg-base-950/70 backdrop-blur-sm transition-opacity ${
+                      selected.has(server.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                    }`}
+                    animate={shakingId === server.id ? shakeAnimation : { x: 0 }}
+                    transition={{ duration: 0.4 }}
+                    onAnimationComplete={() => {
+                      if (shakingId === server.id) setShakingId(null);
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      className="checkbox"
+                      checked={selected.has(server.id)}
+                      onChange={(e) => toggleSelect(server.id, e.target.checked)}
+                    />
+                  </motion.label>
+                  <Link
+                    to={`/servers/${server.id}`}
+                    className={`server-card flex flex-col overflow-hidden ${layout === 'square' ? 'aspect-square' : ''}`}
+                  >
+                    <div
+                      className={
+                        layout === 'square' ? 'relative min-h-0 flex-1' : 'relative h-20 shrink-0'
+                      }
+                    >
+                      <AnimatePresence>
+                        {(server.mapBannerUrl ?? gameDef(server)?.bannerUrl) && (
+                          <motion.img
+                            key={server.mapBannerUrl ?? gameDef(server)?.bannerUrl}
+                            src={server.mapBannerUrl ?? gameDef(server)!.bannerUrl!}
+                            alt=""
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.5 }}
+                            className="absolute inset-0 h-full w-full object-cover"
+                            onError={(e) => {
+                              const fallback = gameDef(server)?.bannerUrl;
+                              if (fallback && e.currentTarget.src !== fallback)
+                                e.currentTarget.src = fallback;
+                            }}
+                          />
+                        )}
+                      </AnimatePresence>
+                      <div className="absolute inset-0 bg-gradient-to-b from-base-950/85 via-base-950/45 to-transparent" />
+                      <div className="relative flex h-full items-start justify-between p-4">
+                        <div className="min-w-0 pl-7">
+                          <h2 className="truncate font-medium text-base-50">{server.name}</h2>
+                          <p className="truncate text-xs text-base-300">{gameLabel(server)}</p>
+                        </div>
+                        <StatusBadge readiness={server.readiness} />
+                      </div>
                     </div>
-                    <StatusBadge readiness={server.readiness} />
-                  </div>
-                </div>
-                <div className="flex items-center gap-4 overflow-hidden px-5 py-3 text-xs text-base-500">
-                  <span className="shrink-0">Port {server.gamePort}</span>
-                  <PlayerCount players={server.players} className="shrink-0" />
-                  {server.status?.running && (
-                    <>
-                      <span className={`shrink-0 ${usageColorClass(server.status.cpuPercent)}`}>
-                        CPU {server.status.cpuPercent}%
-                      </span>
-                      <span className={`shrink-0 ${usageColorClass(ramPercent)}`}>
-                        RAM {server.status.memoryUsedMb}MB / {server.memoryMb}MB
-                      </span>
-                    </>
-                  )}
-                </div>
-                {server.readiness === 'installing' && (
-                  <div className="px-5 pb-3">
-                    <InstallProgressBar installPhase={server.installPhase} bytes={server.installBytes} totalBytes={server.installTotalBytes} />
-                  </div>
-                )}
-              </Link>
+                    <div className="flex items-center gap-4 overflow-hidden px-5 py-3 text-xs text-base-500">
+                      <span className="shrink-0">Port {server.gamePort}</span>
+                      <PlayerCount players={server.players} className="shrink-0" />
+                      {server.status?.running && (
+                        <>
+                          <span className={`shrink-0 ${usageColorClass(server.status.cpuPercent)}`}>
+                            CPU {server.status.cpuPercent}%
+                          </span>
+                          <span className={`shrink-0 ${usageColorClass(ramPercent)}`}>
+                            RAM {server.status.memoryUsedMb}MB / {server.memoryMb}MB
+                          </span>
+                        </>
+                      )}
+                    </div>
+                    {server.readiness === 'installing' && (
+                      <div className="px-5 pb-3">
+                        <InstallProgressBar
+                          installPhase={server.installPhase}
+                          bytes={server.installBytes}
+                          totalBytes={server.installTotalBytes}
+                        />
+                      </div>
+                    )}
+                    {server.readiness === 'booting' && (
+                      <div className="px-5 pb-3">
+                        {/* Compact: the badge already says "Booting up!", so the bar just shows that
+                       work is ongoing. */}
+                        <BootProgress startedAt={server.status?.startedAt ?? null} compact />
+                      </div>
+                    )}
+                  </Link>
+                </motion.div>
               </motion.div>
-            </motion.div>
-          );
-        })}
+            );
+          })}
         </AnimatePresence>
       </motion.div>
     </motion.div>

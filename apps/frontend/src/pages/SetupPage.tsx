@@ -95,7 +95,11 @@ export default function SetupPage() {
 
         {error && <p className="mb-4 text-sm text-red-400">{error}</p>}
 
-        <button type="submit" className="btn-primary w-full transition-transform active:scale-95" disabled={submitting}>
+        <button
+          type="submit"
+          className="btn-primary w-full transition-transform active:scale-95"
+          disabled={submitting}
+        >
           {submitting ? 'Creating…' : 'Create account & continue'}
         </button>
       </motion.form>

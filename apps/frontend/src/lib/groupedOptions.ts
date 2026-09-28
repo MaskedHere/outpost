@@ -1,7 +1,7 @@
-/** Splits "Category — Name" labels (the convention GameDefinition.variantLabels/mapControl.options
- *  use for TF2's maps) into a category -> options structure a two-level picker can use. Options
- *  without a " — " in their label just fall into a single unnamed group, so this degrades safely
- *  for any other game that doesn't use the convention. */
+/**
+ * Splits "Category — Name" labels (used for TF2 maps) into groups for a two-level picker. Labels
+ * without a separator go into a single unnamed group.
+ */
 export interface OptionGroup {
   category: string;
   options: { value: string; label: string }[];

@@ -1,21 +1,35 @@
-﻿import { useEffect, useRef, useState } from 'react';
-import { Terminal } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
+import { KeyboardEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { FiCopy } from 'react-icons/fi';
 import { openConsoleSocket } from '../../lib/ws';
-import '@xterm/xterm/css/xterm.css';
 
-const BACKSPACE = String.fromCharCode(127);
+/** The server console. */
 
-// Keeps memory bounded on a long-running open console tab — plenty for "copy the log" / switching
-// filters, without holding an ever-growing session's worth of output.
+// Keeps memory bounded on a long-running open console.
 const MAX_LINES = 5000;
+
+// How many lines are in the DOM at once.
+const RENDER_LIMIT = 600;
+
+// Incoming output is batched to one render per frame.
+const FLUSH_MS = 60;
 
 type LogFilter = 'all' | 'warn' | 'error';
 
-// Strips ANSI CSI sequences (color codes etc., e.g. "\x1b[39m") — these logs are full of them, and
-// they'd otherwise pollute both the warn/error regex matching and the copied clipboard text.
-// no-control-regex fires on the \x1b here; matching that escape byte is the entire point.
+type Level = 'error' | 'warn' | 'info' | 'debug' | 'chat' | 'join' | 'leave' | 'rcon' | 'outpost';
+
+interface LogLine {
+  id: number;
+  /** ANSI intact - what "Copy log" reproduces. */
+  raw: string;
+  plain: string;
+  time: string | null;
+  level: Level | null;
+  message: string;
+  /** A stack-trace line hanging off the error above it, kept with its parent by the filters. */
+  continuation: boolean;
+}
+
+// Strips ANSI CSI sequences (colour codes etc., e.g. "\x1b[39m")
 // eslint-disable-next-line no-control-regex
 const ANSI_PATTERN = new RegExp('\\x1b\\[[0-9;]*[a-zA-Z]', 'g');
 
@@ -26,34 +40,103 @@ function stripAnsi(line: string): string {
 const ERROR_RE = /\b(error|exception|fatal|severe|caused by)\b/i;
 const WARN_RE = /\bwarn(ing)?\b/i;
 
-/** A stack-trace/detail line hanging off the error above it — "\tat com.foo.Bar(...)",
- *  "Caused by: ...", "... 26 more". None of these contain the word "error", so a naive
- *  line-by-line filter showed the one-line exception header and silently dropped the entire trace
- *  underneath it, which is the part that actually says what broke. */
-function isContinuationLine(plainLine: string): boolean {
-  return /^\s+at\s/.test(plainLine) || /^\s*(caused by|suppressed):/i.test(plainLine) || /^\s*\.\.\.\s*\d+\s*more/.test(plainLine);
+/**
+ * "\tat com.foo.Bar(...)", "Caused by: ...", "... 26 more": trace lines that don't contain "error"
+ * but belong with the exception above them.
+ */
+function isContinuationLine(plain: string): boolean {
+  return (
+    /^\s+at\s/.test(plain) ||
+    /^\s*(caused by|suppressed):/i.test(plain) ||
+    /^\s*\.\.\.\s*\d+\s*more/.test(plain)
+  );
 }
 
-function isErrorLine(plainLine: string): boolean {
-  return ERROR_RE.test(plainLine);
+/**
+ * Pulls the timestamp and level out of a log line so they can be shown as their own elements
+ * instead of as noise repeated at the head of every line.
+ */
+function parseLine(id: number, raw: string): LogLine {
+  const plain = stripAnsi(raw);
+  const continuation = isContinuationLine(plain);
+
+  let rest = plain;
+  let time: string | null = null;
+  let level: Level | null = null;
+
+  const stamped = rest.match(/^\[(\d{1,2}:\d{2}:\d{2})\]\s*/);
+  if (stamped) {
+    time = stamped[1]!;
+    rest = rest.slice(stamped[0].length);
+  }
+
+  const tagged = rest.match(/^\[([^\]]*?)[/|]([A-Z]+)\]:?\s*/);
+  if (tagged) {
+    const named = tagged[2]!.toLowerCase();
+    if (named === 'error' || named === 'fatal' || named === 'severe') level = 'error';
+    else if (named === 'warn' || named === 'warning') level = 'warn';
+    else if (named === 'debug' || named === 'trace') level = 'debug';
+    else if (named === 'info') level = 'info';
+    if (/rcon/i.test(tagged[1]!)) level = 'rcon';
+    rest = rest.slice(tagged[0].length);
+  }
+
+  // Outpost's own notices ("[outpost] console disconnected") are ours, not the game's.
+  if (/^\[outpost\]/.test(rest)) {
+    level = 'outpost';
+    rest = rest.replace(/^\[outpost\]\s*/, '');
+  }
+
+  // Keyword classification runs after the structured pass so a line tagged INFO that is reporting
+  // an exception still reads as an error.
+  if (continuation || ERROR_RE.test(rest)) level = 'error';
+  else if (level !== 'error' && WARN_RE.test(rest)) level = 'warn';
+  else if (level === 'info' || level === null) {
+    if (/\bjoined the game\b/i.test(rest)) level = 'join';
+    else if (/\bleft the game\b/i.test(rest)) level = 'leave';
+    else if (/^<[^>]+>\s/.test(rest)) level = 'chat';
+  }
+
+  return { id, raw, plain, time, level, message: rest, continuation };
 }
 
-function isWarnLine(plainLine: string): boolean {
-  return WARN_RE.test(plainLine);
-}
+/** Badge appearance per level. */
+const BADGE: Record<Level, { label: string; className: string }> = {
+  error: { label: 'ERROR', className: 'bg-red-500/15 text-red-300 ring-red-500/30' },
+  warn: { label: 'WARN', className: 'bg-ember-500/15 text-ember-400 ring-ember-500/30' },
+  info: { label: 'INFO', className: 'bg-base-800 text-base-500 ring-base-700' },
+  debug: { label: 'DEBUG', className: 'bg-base-800 text-base-600 ring-base-700' },
+  chat: { label: 'CHAT', className: 'bg-blue-500/15 text-blue-300 ring-blue-500/30' },
+  join: { label: 'JOIN', className: 'bg-accent-500/15 text-accent-400 ring-accent-500/30' },
+  leave: { label: 'LEAVE', className: 'bg-base-800 text-base-400 ring-base-700' },
+  rcon: { label: 'RCON', className: 'bg-purple-500/15 text-purple-300 ring-purple-500/30' },
+  outpost: { label: 'OUTPOST', className: 'bg-accent-500/15 text-accent-400 ring-accent-500/30' },
+};
+
+const MESSAGE_TONE: Record<Level, string> = {
+  error: 'text-red-200',
+  // Ember only defines 400/500 in the theme.
+  warn: 'text-ember-400',
+  info: 'text-base-200',
+  debug: 'text-base-500',
+  chat: 'text-blue-100',
+  join: 'text-base-200',
+  leave: 'text-base-400',
+  rcon: 'text-base-200',
+  outpost: 'text-accent-300',
+};
 
 /** Selects the lines a filter should show, keeping each match's trailing stack trace with it. */
-function selectLines(rawLines: string[], filter: LogFilter): string[] {
-  if (filter === 'all') return rawLines;
-  const wanted = filter === 'warn' ? isWarnLine : isErrorLine;
-  const out: string[] = [];
+function selectLines(lines: LogLine[], filter: LogFilter): LogLine[] {
+  if (filter === 'all') return lines;
+  const out: LogLine[] = [];
   let inBlock = false;
-  for (const line of rawLines) {
-    const plain = stripAnsi(line);
-    if (wanted(plain)) {
+  for (const line of lines) {
+    const matches = filter === 'warn' ? line.level === 'warn' : line.level === 'error';
+    if (matches) {
       out.push(line);
       inBlock = true;
-    } else if (inBlock && (isContinuationLine(plain) || plain.trim() === '')) {
+    } else if (inBlock && (line.continuation || line.plain.trim() === '')) {
       // Blank lines inside a Java trace are common; keep them so the block stays readable.
       out.push(line);
     } else {
@@ -63,21 +146,6 @@ function selectLines(rawLines: string[], filter: LogFilter): string[] {
   return out;
 }
 
-// xterm renders ANSI, so colouring is just a matter of wrapping the line. Existing codes are
-// stripped first so ours actually wins — a mid-line reset in the original would otherwise drop the
-// colour partway through. This is what makes a crash visibly red instead of the same grey as
-// everything else, which is how a stack trace scrolled past unnoticed.
-const RED = '\x1b[91m';
-const YELLOW = '\x1b[93m';
-const RESET = '\x1b[0m';
-
-function colorize(line: string): string {
-  const plain = stripAnsi(line);
-  if (isErrorLine(plain) || isContinuationLine(plain)) return `${RED}${plain}${RESET}`;
-  if (isWarnLine(plain)) return `${YELLOW}${plain}${RESET}`;
-  return line;
-}
-
 const FILTERS: { value: LogFilter; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'warn', label: 'Warnings' },
@@ -85,153 +153,149 @@ const FILTERS: { value: LogFilter; label: string }[] = [
 ];
 
 export default function ConsoleTab({ serverId }: { serverId: string }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const inputBuffer = useRef('');
-  const termRef = useRef<Terminal | null>(null);
-  // Raw (ANSI intact) completed lines received this session — the source of truth for "Copy log"
-  // and for replaying a filtered view without needing to ask the server for history again.
-  const rawLinesRef = useRef<string[]>([]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const linesRef = useRef<LogLine[]>([]);
+  const pendingRef = useRef<LogLine[]>([]);
   const partialRef = useRef('');
-  const filterRef = useRef<LogFilter>('all');
+  const nextIdRef = useRef(0);
+  const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const socketRef = useRef<WebSocket | null>(null);
+  // Whether the view is pinned to the newest output.
+  const stickRef = useRef(true);
+
+  const [visible, setVisible] = useState<LogLine[]>([]);
   const [filter, setFilter] = useState<LogFilter>('all');
+  // Only lines at or after this id animate in.
+  const [animateFrom, setAnimateFrom] = useState(0);
+  const [connected, setConnected] = useState(false);
+  const [command, setCommand] = useState('');
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
+  const historyRef = useRef<string[]>([]);
+  const historyPos = useRef(-1);
+
+  const filterRef = useRef<LogFilter>('all');
+
+  const recompute = useCallback((nextFilter: LogFilter) => {
+    const matched = selectLines(linesRef.current, nextFilter);
+    setVisible(matched.slice(-RENDER_LIMIT));
+  }, []);
+
+  const flush = useCallback(() => {
+    flushTimer.current = null;
+    if (pendingRef.current.length === 0) return;
+    linesRef.current.push(...pendingRef.current);
+    pendingRef.current = [];
+    if (linesRef.current.length > MAX_LINES) {
+      linesRef.current.splice(0, linesRef.current.length - MAX_LINES);
+    }
+    recompute(filterRef.current);
+  }, [recompute]);
+
+  const push = useCallback(
+    (raw: string) => {
+      pendingRef.current.push(parseLine(nextIdRef.current++, raw));
+      if (flushTimer.current === null) flushTimer.current = setTimeout(flush, FLUSH_MS);
+    },
+    [flush],
+  );
 
   useEffect(() => {
-    if (!containerRef.current) return;
-
-    const term = new Terminal({
-      convertEol: true,
-      fontFamily: '"JetBrains Mono", ui-monospace, monospace',
-      fontSize: 13,
-      theme: {
-        // Uses this app's own base/accent tokens (tailwind.config.js) rather than xterm's defaults.
-        // Deliberately a step darker than the surrounding .card (base-900) so the console reads as
-        // a recessed terminal surface instead of loose text floating on the panel.
-        background: '#16181c', // base-950
-        foreground: '#dbe4ec', // base-100
-        cursor: '#09de78', // accent-500
-        cursorAccent: '#16181c', // base-950
-        selectionBackground: 'rgba(9, 222, 120, 0.25)', // accent-500 @ 25%
-        black: '#16181c',
-        brightBlack: '#5c6472',
-        red: '#f87171',
-        brightRed: '#fca5a5',
-        green: '#09de78',
-        brightGreen: '#33f598',
-        yellow: '#f97316',
-        brightYellow: '#fb923c',
-        blue: '#60a5fa',
-        brightBlue: '#93c5fd',
-        magenta: '#c084fc',
-        brightMagenta: '#d8b4fe',
-        cyan: '#22d3ee',
-        brightCyan: '#67e8f9',
-        white: '#dbe4ec',
-        brightWhite: '#ecf9fb',
-      },
-    });
-    termRef.current = term;
-    rawLinesRef.current = [];
+    linesRef.current = [];
+    pendingRef.current = [];
     partialRef.current = '';
-    filterRef.current = 'all';
+    nextIdRef.current = 0;
+    stickRef.current = true;
+    setVisible([]);
     setFilter('all');
-
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(containerRef.current);
-    fit.fit();
-    term.writeln('Connecting to console...\r\n');
+    filterRef.current = 'all';
 
     const socket = openConsoleSocket(serverId);
+    socketRef.current = socket;
+    socket.onopen = () => setConnected(true);
     socket.onmessage = (event) => {
-      const data: string = event.data;
-
-      // Always record complete lines (ANSI intact) for copy/filter-switch, buffering any trailing
-      // partial line across chunks.
-      const combined = partialRef.current + data;
+      const combined = partialRef.current + (event.data as string);
       const parts = combined.split('\n');
+      // A trailing partial line waits for its newline.
       partialRef.current = parts.pop() ?? '';
-      for (const line of parts) {
-        rawLinesRef.current.push(line);
-      }
-      if (rawLinesRef.current.length > MAX_LINES) {
-        rawLinesRef.current.splice(0, rawLinesRef.current.length - MAX_LINES);
-      }
-
-      // Colouring needs a whole line to classify, so output is written line-by-line rather than
-      // passing the raw chunk straight through. A trailing partial line waits for its newline —
-      // server logs are newline-terminated, so in practice this isn't perceptible.
-      for (const line of selectLines(parts, filterRef.current)) {
-        term.write(colorize(line) + '\r\n');
-      }
+      for (const line of parts) push(line.replace(/\r$/, ''));
     };
-    socket.onclose = () => term.writeln('\r\n[outpost] console disconnected');
-    socket.onerror = () => term.writeln('\r\n[outpost] console error');
-
-    const dataDisposable = term.onData((data) => {
-      // Local line-editing: echo characters, only send a full line to the server on Enter.
-      if (data === '\r') {
-        term.write('\r\n');
-        if (inputBuffer.current.length > 0 && socket.readyState === WebSocket.OPEN) {
-          socket.send(inputBuffer.current);
-        }
-        inputBuffer.current = '';
-      } else if (data === BACKSPACE) {
-        if (inputBuffer.current.length > 0) {
-          inputBuffer.current = inputBuffer.current.slice(0, -1);
-          term.write('\b \b');
-        }
-      } else {
-        inputBuffer.current += data;
-        term.write(data);
-      }
-    });
-
-    const resizeObserver = new ResizeObserver(() => {
-      // A ResizeObserver callback already queued when this tab unmounts can still fire once after
-      // `disconnect()` (a known browser-level race, not a React bug) — by then xterm's internal
-      // renderer is gone, so fit() throws "Cannot read properties of undefined (reading
-      // 'dimensions')". Uncaught, that error was wedging the tab-switch entirely: AnimatePresence's
-      // exit transition never completed, leaving Console's content stuck on screen no matter what
-      // tab you clicked next. Harmless to swallow — there's nothing left to fit anyway.
-      try {
-        fit.fit();
-      } catch {
-        // ignore
-      }
-    });
-    resizeObserver.observe(containerRef.current);
+    socket.onclose = () => {
+      setConnected(false);
+      push('[outpost] console disconnected');
+    };
+    socket.onerror = () => push('[outpost] console error');
 
     return () => {
-      dataDisposable.dispose();
-      resizeObserver.disconnect();
+      if (flushTimer.current !== null) clearTimeout(flushTimer.current);
+      flushTimer.current = null;
       socket.close();
-      term.dispose();
-      termRef.current = null;
+      socketRef.current = null;
     };
-  }, [serverId]);
+  }, [serverId, push]);
+
+  // Pin to the bottom after each batch, unless the reader has scrolled up.
+  useEffect(() => {
+    if (!stickRef.current) return;
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [visible]);
+
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    // A small tolerance: "close enough to the bottom" counts as following along, so a stray pixel
+    // of momentum scrolling doesn't silently unpin the view.
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  };
 
   const applyFilter = (next: LogFilter) => {
     filterRef.current = next;
     setFilter(next);
-    const term = termRef.current;
-    if (!term) return;
+    setAnimateFrom(nextIdRef.current);
+    stickRef.current = true;
+    recompute(next);
+  };
 
-    term.reset();
-    const matched = selectLines(rawLinesRef.current, next);
-    if (matched.length === 0) {
-      term.writeln(next === 'all' ? '(no output yet)' : `[outpost] no ${next === 'warn' ? 'warning' : 'error'} lines yet.`);
-    } else {
-      term.write(matched.map((line) => colorize(line) + '\r\n').join(''));
+  const sendCommand = () => {
+    const socket = socketRef.current;
+    const text = command.trim();
+    if (!text || socket?.readyState !== WebSocket.OPEN) return;
+    socket.send(text);
+    historyRef.current.push(text);
+    historyPos.current = -1;
+    setCommand('');
+    stickRef.current = true;
+  };
+
+  const onCommandKey = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      sendCommand();
+      return;
+    }
+    // Command history, the one terminal affordance worth keeping.
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      const history = historyRef.current;
+      if (history.length === 0) return;
+      e.preventDefault();
+      if (e.key === 'ArrowUp') {
+        historyPos.current =
+          historyPos.current < 0 ? history.length - 1 : Math.max(0, historyPos.current - 1);
+        setCommand(history[historyPos.current] ?? '');
+      } else if (historyPos.current >= 0) {
+        historyPos.current += 1;
+        if (historyPos.current >= history.length) {
+          historyPos.current = -1;
+          setCommand('');
+        } else {
+          setCommand(history[historyPos.current] ?? '');
+        }
+      }
     }
   };
 
-  /** navigator.clipboard only exists in a "secure context" — HTTPS or localhost. Outpost on a NAS
-   *  is reached over plain http://<nas-ip>:7420, so the entire API is undefined there and "Copy
-   *  log" could never work, which is exactly how it failed in practice. This falls back to the old
-   *  execCommand path, which has no such restriction. Deprecated, but it's the only thing that
-   *  works over plain HTTP, and it degrades to a visible "Copy failed" if even that is blocked. */
+  /** navigator.clipboard only exists in a "secure context". */
   const writeToClipboard = async (text: string): Promise<boolean> => {
     if (navigator.clipboard?.writeText) {
       try {
@@ -244,7 +308,7 @@ export default function ConsoleTab({ serverId }: { serverId: string }) {
     try {
       const textarea = document.createElement('textarea');
       textarea.value = text;
-      // Kept off-screen but still focusable — execCommand('copy') only copies a live selection.
+      // Kept off-screen but still focusable.
       textarea.setAttribute('readonly', '');
       textarea.style.position = 'fixed';
       textarea.style.top = '-1000px';
@@ -260,9 +324,8 @@ export default function ConsoleTab({ serverId }: { serverId: string }) {
   };
 
   const copyLog = async () => {
-    // Copies the full session log, not just the filtered view — "copy the log" to paste somewhere
-    // for help is the whole point, and a filtered excerpt usually leaves out the useful context.
-    const text = rawLinesRef.current.map(stripAnsi).join('\n');
+    // Copies the full session log, not just the filtered view.
+    const text = linesRef.current.map((l) => l.plain).join('\n');
     const ok = await writeToClipboard(text);
     if (ok) {
       setCopied(true);
@@ -282,7 +345,9 @@ export default function ConsoleTab({ serverId }: { serverId: string }) {
             <button
               key={f.value}
               className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
-                filter === f.value ? 'bg-base-700 text-base-50' : 'text-base-500 hover:text-base-200'
+                filter === f.value
+                  ? 'bg-base-700 text-base-50'
+                  : 'text-base-500 hover:text-base-200'
               }`}
               onClick={() => applyFilter(f.value)}
             >
@@ -290,16 +355,67 @@ export default function ConsoleTab({ serverId }: { serverId: string }) {
             </button>
           ))}
         </div>
-        <button className={`btn-secondary !px-2.5 !py-1 !text-xs ${copyFailed ? '!text-red-400' : ''}`} onClick={copyLog}>
+        <button
+          className={`btn-secondary !px-2.5 !py-1 !text-xs ${copyFailed ? '!text-red-400' : ''}`}
+          onClick={copyLog}
+        >
           <FiCopy className="h-3.5 w-3.5" />
           {copyFailed ? 'Copy failed' : copied ? 'Copied ✓' : 'Copy log'}
         </button>
       </div>
-      {/* Inset well around the terminal: the darker fill plus an inner ring gives the console a
-          recessed edge, so output reads as being *inside* something rather than printed onto the
-          card. p-2 keeps the first column and top line off the border. */}
-      <div className="rounded-lg bg-base-950 p-2 ring-1 ring-inset ring-base-800/80">
-        <div ref={containerRef} className="h-[60vh]" />
+
+      {/* Inset well: a darker fill plus an inner ring gives the console a recessed look. */}
+      <div className="rounded-lg bg-base-950 ring-1 ring-inset ring-base-800/80">
+        <div
+          ref={scrollRef}
+          onScroll={onScroll}
+          className="h-[60vh] overflow-y-auto overflow-x-hidden p-2 font-mono text-[13px] leading-[1.45]"
+        >
+          {visible.length === 0 ? (
+            <p className="px-1 py-2 text-base-600">
+              {connected ? 'Waiting for output…' : 'Connecting to console…'}
+            </p>
+          ) : (
+            visible.map((line) => (
+              <div
+                key={line.id}
+                className={`flex gap-2 px-1 ${line.id >= animateFrom ? 'animate-log-in' : ''}`}
+              >
+                {line.time && (
+                  <span className="shrink-0 select-none text-base-600">{line.time}</span>
+                )}
+                {line.level && !line.continuation && (
+                  <span
+                    className={`mt-[2px] h-fit shrink-0 select-none rounded px-1.5 text-[10px] font-semibold leading-[1.4] tracking-wide ring-1 ring-inset ${BADGE[line.level].className}`}
+                  >
+                    {BADGE[line.level].label}
+                  </span>
+                )}
+                <span
+                  className={`min-w-0 whitespace-pre-wrap break-words ${line.level ? MESSAGE_TONE[line.level] : 'text-base-200'}`}
+                >
+                  {line.message}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* A real input, rather than echoing keystrokes into the log by hand the way the terminal
+            emulator had to. */}
+        <div className="flex items-center gap-2 border-t border-base-800/80 px-3 py-2">
+          <span className="select-none font-mono text-sm text-accent-500">&gt;</span>
+          <input
+            className="min-w-0 flex-1 bg-transparent font-mono text-[13px] text-base-100 outline-none placeholder:text-base-600"
+            value={command}
+            onChange={(e) => setCommand(e.target.value)}
+            onKeyDown={onCommandKey}
+            placeholder={connected ? 'Type a command and press Enter' : 'Console disconnected'}
+            disabled={!connected}
+            spellCheck={false}
+            autoComplete="off"
+          />
+        </div>
       </div>
     </div>
   );

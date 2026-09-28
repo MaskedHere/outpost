@@ -2,35 +2,52 @@
 /// <reference lib="dom.iterable" />
 import { chromium, type Browser } from 'playwright';
 
-// CurseForge's site sits behind Cloudflare's bot challenge for its search/listing pages — a plain
-// HTTP request gets "Just a moment..." instead of real content (confirmed empirically), so search
-// needs an actual rendered browser. Individual content pages (a specific pack's download page)
-// aren't behind the same challenge, so those stay on plain fetch — see resolveDownloadUrl.
+// CurseForge's site sits behind Cloudflare's bot challenge for its search/listing pages.
 const BASE = 'https://www.curseforge.com';
 const REAL_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-// Headless Chromium takes ~1-2s to launch — reuse one instance across requests instead of paying
-// that cost per search.
-//
-// In the production image there's no Playwright-downloaded browser: Playwright doesn't officially
-// support Alpine, and bundling its own Chromium would roughly triple the image size. Instead the
-// Dockerfile installs Alpine's system chromium package and points here at it via
-// CHROMIUM_PATH. Locally the variable is unset and Playwright uses its own managed browser as usual.
+// Headless Chromium takes ~1-2s to launch.
+/** The scraping browser is shut down once it goes unused. */
+const BROWSER_IDLE_MS = 3 * 60 * 1000;
+
 let browserPromise: Promise<Browser> | null = null;
+let idleTimer: ReturnType<typeof setTimeout> | null = null;
+/** Searches can overlap, so the browser is only shut down once no scrape is using it. */
+let activeUsers = 0;
+
 async function getBrowser(): Promise<Browser> {
+  if (idleTimer) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  }
   if (!browserPromise) {
     const executablePath = process.env.CHROMIUM_PATH || undefined;
     browserPromise = chromium.launch({ headless: true, executablePath });
   }
+  activeUsers += 1;
   return browserPromise;
+}
+
+/** Every getBrowser() must be paired with this, so the idle countdown can start once the last
+ *  in-flight scrape finishes. */
+function releaseBrowser(): void {
+  activeUsers = Math.max(0, activeUsers - 1);
+  if (activeUsers > 0 || idleTimer) return;
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    if (activeUsers > 0) return;
+    const closing = browserPromise;
+    browserPromise = null;
+    closing?.then((b) => b.close()).catch(() => undefined);
+  }, BROWSER_IDLE_MS);
+  // Don't hold the process open just to close a browser later.
+  idleTimer.unref?.();
 }
 
 export interface CurseForgeModSummary {
   slug: string;
-  /** The file id CurseForge's own search card links to (its current default/latest download) —
-   *  good enough to import directly; Outpost doesn't need the full per-version file list CurseForge's
-   *  key-gated API would provide. */
+  /** The file id CurseForge's own search card links to (its current default/latest download) */
   fileId: number;
   name: string;
   summary: string;
@@ -38,15 +55,18 @@ export interface CurseForgeModSummary {
   gameVersion: string | null;
 }
 
-// CurseForge's search page filters mod loader via a numeric gameVersionTypeId, not a name — no
-// documented mapping, confirmed directly from the site's own loader filter links.
+// CurseForge's search page filters mod loader via a numeric gameVersionTypeId, not a name.
 const LOADER_TYPE_ID: Record<string, number> = { forge: 1, fabric: 4, quilt: 5, neoforge: 6 };
 
 async function searchProjects(params: {
-  class: 'modpacks' | 'mc-mods';
+  /** CurseForge's own game slug. */
+  game?: string;
+  class: string;
   query: string;
   mcVersion?: string;
   loader?: string;
+  /** CurseForge's second-level tag within a class (e.g. "server-mods", "quality-of-life"). */
+  category?: string;
   offset?: number;
   limit?: number;
 }): Promise<CurseForgeModSummary[]> {
@@ -63,14 +83,16 @@ async function searchProjects(params: {
       sortBy: 'relevancy',
     });
     if (params.query) qs.set('search', params.query);
-    // `version`, not `gameVersion`. Verified against the live site: gameVersion= is accepted and
-    // silently ignored, returning byte-identical results to no filter at all, which is why changing
-    // the Minecraft version appeared to do nothing. Note the cards still show each project's newest
-    // version rather than the matched one, so results must NOT be post-filtered on the badge text.
+    // `version`, not `gameVersion`.
     if (params.mcVersion) qs.set('version', params.mcVersion);
-    if (params.loader && LOADER_TYPE_ID[params.loader]) qs.set('gameVersionTypeId', String(LOADER_TYPE_ID[params.loader]));
+    if (params.loader && LOADER_TYPE_ID[params.loader])
+      qs.set('gameVersionTypeId', String(LOADER_TYPE_ID[params.loader]));
+    if (params.category) qs.set('categories', params.category);
 
-    await page.goto(`${BASE}/minecraft/search?${qs.toString()}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto(`${BASE}/${params.game ?? 'minecraft'}/search?${qs.toString()}`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
+    });
     await page.waitForSelector('.project-card', { timeout: 15000 }).catch(() => null);
 
     return await page.$$eval('.project-card', (cards) =>
@@ -99,6 +121,7 @@ async function searchProjects(params: {
   } finally {
     await page.close();
     await context.close();
+    releaseBrowser();
   }
 }
 
@@ -115,30 +138,123 @@ export async function searchMods(params: {
   query: string;
   mcVersion?: string;
   loader?: string;
+  category?: string;
   offset?: number;
   limit?: number;
 }): Promise<CurseForgeModSummary[]> {
   return searchProjects({ ...params, class: 'mc-mods' });
 }
 
-/** Where a modpack publishes a distinct "Server Pack"/"Server Files" download (common for actively
- *  maintained packs, e.g. All the Mods) — a zip built to drop straight onto a dedicated server,
- *  containing the actual mod jars directly rather than the numeric-ID-only manifest.json the
- *  default "Client" file ships (which needs CurseForge's key-gated API to resolve, so Outpost falls
- *  back to guessing by name against Modrinth for it — see import.ts). Preferring this file when it
- *  exists means every mod installs from its real bytes, no guessing, no "couldn't be matched"
- *  entries. Returns null if this pack doesn't publish one (most smaller/personal packs don't). */
+/** CurseForge's Minecraft mod categories, trimmed to the ones worth offering. */
+export const CURSEFORGE_MC_CATEGORIES: { value: string; label: string }[] = [
+  { value: 'adventure-rpg', label: 'Adventure & RPG' },
+  { value: 'technology', label: 'Technology' },
+  { value: 'magic', label: 'Magic' },
+  { value: 'utility-qol', label: 'Utility & QoL' },
+  { value: 'server-utility', label: 'Server utility' },
+  { value: 'performance', label: 'Performance' },
+  { value: 'storage', label: 'Storage' },
+  { value: 'mc-food', label: 'Food & farming' },
+  { value: 'world-mobs', label: 'Mobs' },
+  { value: 'world-gen', label: 'World generation' },
+  { value: 'armor-weapons-tools', label: 'Armor, tools & weapons' },
+  { value: 'library-api', label: 'Library / API' },
+];
+
+/** CurseForge's Palworld categories, and what each is. */
+/** CurseForge's Palworld mod types, with whether Outpost can install one. */
+export const PALWORLD_CATEGORIES: {
+  value: string;
+  label: string;
+  installable: boolean;
+  note: string;
+}[] = [
+  {
+    value: 'patch-pak-mods',
+    label: 'Pak mods',
+    installable: true,
+    note: 'Loaded straight from the game’s Paks directory — no mod loader needed. Only mods that say they are server-side change anything when installed here; purely cosmetic ones have to be installed by each player on their own machine.',
+  },
+  {
+    value: 'miscellaneous',
+    label: 'Miscellaneous',
+    installable: true,
+    note: 'Anything that does not fit the other types. Installed as a pak — check the mod’s own page for whether it belongs on the server or the client.',
+  },
+  {
+    value: 'lua-code-mods',
+    label: 'Lua code mods',
+    installable: false,
+    note: 'Needs UE4SS, which has no native Linux build — and this server runs the Linux dedicated binary. Browsable here, but installing one would do nothing.',
+  },
+  {
+    value: 'blueprint-code-mods',
+    label: 'Blueprint mods',
+    installable: false,
+    note: 'Needs UE4SS, which has no native Linux build — and this server runs the Linux dedicated binary. Browsable here, but installing one would do nothing.',
+  },
+  {
+    value: 'cpp-code-mods',
+    label: 'C++ code mods',
+    installable: false,
+    note: 'Needs UE4SS, which has no native Linux build — and this server runs the Linux dedicated binary. Browsable here, but installing one would do nothing.',
+  },
+];
+
+/** Searches one of CurseForge's Palworld categories. */
+export async function searchPalworldMods(params: {
+  query: string;
+  /** The mod type; CurseForge calls this the class (lua-code-mods, patch-pak-mods, etc.). */
+  type?: string;
+  /** An optional tag within that type (server-mods, quality-of-life, etc.). */
+  category?: string;
+  offset?: number;
+  limit?: number;
+}): Promise<CurseForgeModSummary[]> {
+  return searchProjects({
+    game: 'palworld',
+    class: params.type || 'lua-code-mods',
+    query: params.query,
+    category: params.category,
+    offset: params.offset,
+    limit: params.limit,
+  });
+}
+
+/**
+ * The tag filters CurseForge offers within a Palworld mod type, taken from its own filter links.
+ */
+export const PALWORLD_FILTER_TAGS: { value: string; label: string }[] = [
+  { value: 'server-mods', label: 'Server mods' },
+  { value: 'gameplay', label: 'Gameplay' },
+  { value: 'quality-of-life', label: 'Quality of life' },
+  { value: 'settings', label: 'Settings' },
+  { value: 'utilities', label: 'Utilities' },
+  { value: 'performance', label: 'Performance' },
+  { value: 'pals', label: 'Pals' },
+  { value: 'player', label: 'Player' },
+  { value: 'ui', label: 'UI' },
+  { value: 'graphics', label: 'Graphics' },
+  { value: 'audio', label: 'Audio' },
+];
+
+/**
+ * Where a modpack publishes a distinct "Server Pack"/"Server Files" download (common for actively
+ * maintained packs, e.g. All the Mods)
+ */
 export async function findServerPackFileId(slug: string): Promise<number | null> {
   const browser = await getBrowser();
   const context = await browser.newContext({ userAgent: REAL_UA });
   const page = await context.newPage();
   try {
-    await page.goto(`${BASE}/minecraft/modpacks/${slug}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto(`${BASE}/minecraft/modpacks/${slug}`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
+    });
     await page.waitForSelector('#recent-files', { timeout: 10000 }).catch(() => null);
 
     // #recent-files is a flat run of <h4> version-group headings and <a class="file-card"> siblings
-    // (not nested) — a "Server Pack(s)"/"Server File(s)" heading's very next sibling is that file's
-    // card, with the file id in its href (/minecraft/modpacks/<slug>/files/<id>).
+    // (not nested)
     const href = await page.evaluate(() => {
       const container = document.querySelector('#recent-files');
       if (!container) return null;
@@ -158,15 +274,17 @@ export async function findServerPackFileId(slug: string): Promise<number | null>
   } finally {
     await page.close();
     await context.close();
+    releaseBrowser();
   }
 }
 
-/** Extracts the real signed forgecdn.net URL from a CurseForge file-download page already loaded
- *  into `page`. Everything stays inside the browser context on purpose: a plain Node `fetch()` to
- *  curseforge.com gets challenged by Cloudflare even where curl doesn't (different TLS
- *  fingerprint), so this rides on Playwright's `context.request` instead — the same browser/TLS
- *  stack and cookies (including any Cloudflare clearance cookie) `page.goto` just earned. */
-async function extractDownloadUrl(page: Awaited<ReturnType<Browser['newPage']>>): Promise<string | null> {
+/**
+ * Extracts the real signed forgecdn.net URL from a CurseForge file-download page already loaded
+ * into `page`.
+ */
+async function extractDownloadUrl(
+  page: Awaited<ReturnType<Browser['newPage']>>,
+): Promise<string | null> {
   const downloadLinkSelector = 'a[href*="/api/v1/mods/"][href*="/download"]';
   const href = await page
     .waitForSelector(downloadLinkSelector, { timeout: 15000 })
@@ -175,25 +293,34 @@ async function extractDownloadUrl(page: Awaited<ReturnType<Browser['newPage']>>)
   if (!href) return null;
   const apiUrl = href.startsWith('http') ? href : `${BASE}${href}`;
 
-  const resp = await page.context().request.get(apiUrl, { maxRedirects: 0, headers: { 'User-Agent': REAL_UA } });
+  const resp = await page
+    .context()
+    .request.get(apiUrl, { maxRedirects: 0, headers: { 'User-Agent': REAL_UA } });
   return resp.headers()['location'] ?? null;
 }
 
-/** Resolves a CurseForge file to its actual downloadable URL (a signed forgecdn.net link) — works
- *  for any project category (modpacks, mc-mods, ...), since the download-page structure and
- *  extraction logic is identical regardless. */
-export async function resolveDownloadUrl(slug: string, fileId: number, category: string = 'modpacks'): Promise<string> {
+/** Resolves a CurseForge file to its actual downloadable URL (a signed forgecdn.net link) */
+export async function resolveDownloadUrl(
+  slug: string,
+  fileId: number,
+  category: string = 'modpacks',
+  game: string = 'minecraft',
+): Promise<string> {
   const browser = await getBrowser();
   const context = await browser.newContext({ userAgent: REAL_UA });
   const page = await context.newPage();
   try {
-    await page.goto(`${BASE}/minecraft/${category}/${slug}/download/${fileId}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto(`${BASE}/${game}/${category}/${slug}/download/${fileId}`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
+    });
     const url = await extractDownloadUrl(page);
     if (!url) throw new Error("Couldn't find a download link on CurseForge's page for this file");
     return url;
   } finally {
     await page.close();
     await context.close();
+    releaseBrowser();
   }
 }
 
@@ -202,19 +329,16 @@ export interface CurseForgeDependency {
   name: string;
 }
 
-/** Scrapes a project's own Relations > Dependencies page (e.g. curseforge.com/minecraft/mc-mods/
- *  waystones/relations/dependencies) for its "Required Dependency" relations — the real dependency
- *  graph CurseForge itself curates for every mod, confirmed directly against Waystones' page (lists
- *  Balm and Shogi as required). This is what makes dependency resolution possible for *any*
- *  CurseForge mod, not just ones that happen to also be hash-identical on Modrinth. Embedded
- *  Library/Optional Dependency/Tool/Incompatible/Include relations are deliberately excluded — only
- *  "Required Dependency" means the mod won't run without it. */
+/** Scrapes a project's Relations > Dependencies page for its required dependencies. */
 async function findRequiredDependenciesOnPage(
   page: Awaited<ReturnType<Browser['newPage']>>,
   slug: string,
   category: string,
 ): Promise<CurseForgeDependency[]> {
-  await page.goto(`${BASE}/minecraft/${category}/${slug}/relations/dependencies`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.goto(`${BASE}/minecraft/${category}/${slug}/relations/dependencies`, {
+    waitUntil: 'domcontentloaded',
+    timeout: 30000,
+  });
   await page.waitForSelector('a.project-relation-card', { timeout: 10000 }).catch(() => null);
   return page.$$eval('a.project-relation-card', (cards) =>
     cards
@@ -227,14 +351,9 @@ async function findRequiredDependenciesOnPage(
   );
 }
 
-/** Finds the file id for a dependency that best matches the pack's own Minecraft version and loader
- *  — the dependency listing itself carries no file/version info, only a project slug, so this reads
- *  the project's own Files list (each file-card carries its version and loader as plain text, e.g.
- *  "26.1.2" / "NeoForge" — confirmed against Balm's files page) and picks the closest match. Prefers
- *  an exact version+loader match, then falls back to the newest file for the right loader (the files
- *  list is already sorted newest-first) — but never falls back across loaders, since installing e.g.
- *  a NeoForge jar into a Fabric pack would crash the server outright, which is worse than simply
- *  skipping a dependency Outpost couldn't confidently match. */
+/**
+ * Finds the file id for a dependency that best matches the pack's own Minecraft version and loader.
+ */
 async function findBestFileIdOnPage(
   page: Awaited<ReturnType<Browser['newPage']>>,
   slug: string,
@@ -242,10 +361,13 @@ async function findBestFileIdOnPage(
   loader: string,
   category: string,
 ): Promise<number | null> {
-  await page.goto(`${BASE}/minecraft/${category}/${slug}/files/all?page=1&pageSize=20&showAlphaFiles=hide`, {
-    waitUntil: 'domcontentloaded',
-    timeout: 30000,
-  });
+  await page.goto(
+    `${BASE}/minecraft/${category}/${slug}/files/all?page=1&pageSize=20&showAlphaFiles=hide`,
+    {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
+    },
+  );
   await page.waitForSelector('a.file-card', { timeout: 10000 }).catch(() => null);
   const files = await page.$$eval('a.file-card', (cards) =>
     cards
@@ -262,18 +384,18 @@ async function findBestFileIdOnPage(
       .filter((f) => f.fileId),
   );
 
-  const exact = files.find((f) => f.version === mcVersion && f.loader.toLowerCase() === loader.toLowerCase());
+  const exact = files.find(
+    (f) => f.version === mcVersion && f.loader.toLowerCase() === loader.toLowerCase(),
+  );
   if (exact) return exact.fileId;
   const loaderMatch = files.find((f) => f.loader.toLowerCase() === loader.toLowerCase());
   return loaderMatch?.fileId ?? null;
 }
 
-/** Walks a mod's required-dependency tree (breadth-first, via CurseForge's own Relations page) and
- *  resolves each dependency to a concrete file id matching the pack's Minecraft version and loader —
- *  everything a caller needs to then download and install each one. Reuses a single browser
- *  page/context across the whole walk rather than opening a fresh one per navigation (a naive
- *  implementation could easily rack up a dozen+ page loads for a mod with a deep dependency chain).
- *  Capped at MAX_DEPENDENCIES total so a pathological or cyclic relation graph can't run away. */
+/**
+ * Resolves a mod's required-dependency tree breadth-first, picking each dependency's file for the
+ * pack's Minecraft version and loader.
+ */
 export async function resolveRequiredDependencyChain(
   rootSlug: string,
   mcVersion: string,
@@ -290,11 +412,19 @@ export async function resolveRequiredDependencyChain(
   try {
     while (queue.length > 0 && results.length < MAX_DEPENDENCIES) {
       const currentSlug = queue.shift()!;
-      const deps = await findRequiredDependenciesOnPage(page, currentSlug, category).catch(() => []);
+      const deps = await findRequiredDependenciesOnPage(page, currentSlug, category).catch(
+        () => [],
+      );
       for (const dep of deps) {
         if (seen.has(dep.slug) || results.length >= MAX_DEPENDENCIES) continue;
         seen.add(dep.slug);
-        const fileId = await findBestFileIdOnPage(page, dep.slug, mcVersion, loader, category).catch(() => null);
+        const fileId = await findBestFileIdOnPage(
+          page,
+          dep.slug,
+          mcVersion,
+          loader,
+          category,
+        ).catch(() => null);
         if (!fileId) continue;
         results.push({ ...dep, fileId });
         queue.push(dep.slug);
@@ -304,41 +434,52 @@ export async function resolveRequiredDependencyChain(
   } finally {
     await page.close();
     await context.close();
+    releaseBrowser();
   }
 }
 
 export interface ResolvedCurseForgeMod {
   projectSlug: string;
   projectName: string;
-  /** null if the project exists but this specific file no longer does (removed/renamed). */
+  /** Null if the project exists but this specific file no longer does (removed/renamed). */
   downloadUrl: string | null;
 }
 
-/** Resolves a single mod referenced by numeric {projectID, fileID} inside a CurseForge modpack's
- *  manifest.json — the "share export" format only carries these opaque IDs (which normally need
- *  CurseForge's key-gated API to resolve), but curseforge.com/projects/<id> redirects to the mod's
- *  real slugged page with no API key needed, and from there the same download-link extraction
- *  `resolveDownloadUrl` uses works for any project category, not just modpacks. This is what lets
- *  Outpost fetch every mod's REAL file — the same thing the official CurseForge app itself does when
- *  it resolves a "share" import locally — instead of guessing a same-named Modrinth mod (see
- *  import.ts's importCurseForge). Returns null only if the project itself no longer exists. */
-export async function resolveModFileDownloadUrl(projectId: number, fileId: number): Promise<ResolvedCurseForgeMod | null> {
+/**
+ * Resolves a single mod referenced by numeric {projectID, fileID} inside a CurseForge modpack's
+ * manifest.json.
+ */
+export async function resolveModFileDownloadUrl(
+  projectId: number,
+  fileId: number,
+): Promise<ResolvedCurseForgeMod | null> {
   const browser = await getBrowser();
   const context = await browser.newContext({ userAgent: REAL_UA });
   const page = await context.newPage();
   try {
-    await page.goto(`${BASE}/projects/${projectId}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto(`${BASE}/projects/${projectId}`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
+    });
     // CurseForge's SPA serves a custom 404 page (with an empty <title>) rather than a real 404
-    // status for a dead redirect target — checking the title is what actually works here, confirmed
-    // empirically against both a real project id and a made-up one.
+    // status for a dead redirect target.
     const projectTitle = await page.title();
     if (!projectTitle) return null;
 
     const projectUrl = page.url();
     const projectSlug = projectUrl.split('/').filter(Boolean).pop() ?? String(projectId);
-    const projectName = projectTitle.replace(/\s*-\s*Minecraft\s+(Mods|Modpacks|Resource Packs|Data Packs|Bukkit Plugins).*$/i, '').trim() || projectSlug;
+    const projectName =
+      projectTitle
+        .replace(
+          /\s*-\s*Minecraft\s+(Mods|Modpacks|Resource Packs|Data Packs|Bukkit Plugins).*$/i,
+          '',
+        )
+        .trim() || projectSlug;
 
-    await page.goto(`${projectUrl}/download/${fileId}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto(`${projectUrl}/download/${fileId}`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
+    });
     if (!(await page.title())) return { projectSlug, projectName, downloadUrl: null };
 
     const downloadUrl = await extractDownloadUrl(page);
@@ -348,5 +489,6 @@ export async function resolveModFileDownloadUrl(projectId: number, fileId: numbe
   } finally {
     await page.close();
     await context.close();
+    releaseBrowser();
   }
 }

@@ -1,12 +1,7 @@
 import { ReactNode, useEffect, useRef, useState } from 'react';
 import { FiUploadCloud } from 'react-icons/fi';
 
-/** Wraps any content with drag-and-drop file import. Listens at the window level rather than just
- *  its own bounding box — drag a file in from anywhere over the page, not just precisely over this
- *  component — and the overlay it shows is a real full-viewport takeover (fixed, not absolute), so
- *  it reads as "the whole app is ready to catch this" rather than a small inline hint. Only one of
- *  these is ever mounted at a time in practice (whichever page/panel is currently the one that can
- *  accept an import), so a page-wide listener never fights another one for the same drop. */
+/** Wraps any content with drag-and-drop file import. */
 export default function DropZone({
   onDrop,
   hint,
@@ -20,6 +15,12 @@ export default function DropZone({
 }) {
   const [dragging, setDragging] = useState(false);
   const depth = useRef(0);
+
+  // Held in a ref so the listeners below can register exactly once.
+  const onDropRef = useRef(onDrop);
+  useEffect(() => {
+    onDropRef.current = onDrop;
+  }, [onDrop]);
 
   useEffect(() => {
     const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
@@ -46,7 +47,7 @@ export default function DropZone({
       depth.current = 0;
       setDragging(false);
       const files = Array.from(e.dataTransfer?.files ?? []);
-      if (files.length > 0) onDrop(files);
+      if (files.length > 0) onDropRef.current(files);
     };
 
     window.addEventListener('dragenter', onDragEnter);
@@ -59,7 +60,8 @@ export default function DropZone({
       window.removeEventListener('dragleave', onDragLeave);
       window.removeEventListener('drop', onWindowDrop);
     };
-  }, [onDrop]);
+    // Registered once for the component's lifetime.
+  }, []);
 
   return (
     <div className={className}>

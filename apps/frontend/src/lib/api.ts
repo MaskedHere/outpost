@@ -4,14 +4,17 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
     res = await fetch(path, {
       ...options,
       credentials: 'include',
+      // Everything here reports live state.
+      cache: 'no-store',
       headers: {
-        ...(options.body && !(options.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}),
+        ...(options.body && !(options.body instanceof FormData)
+          ? { 'Content-Type': 'application/json' }
+          : {}),
         ...options.headers,
       },
     });
   } catch {
-    // fetch() itself throws (not an HTTP error) when the backend process isn't reachable at all —
-    // most commonly the panel's own server being down, not anything about game servers.
+    // fetch() itself throws (not an HTTP error) when the backend process isn't reachable at all.
     throw new Error("Can't reach the Outpost server. Make sure it's running, then reload.");
   }
 
@@ -37,9 +40,15 @@ export interface AuthStatus {
 export const authApi = {
   status: () => apiFetch<AuthStatus>('/api/auth/status'),
   setup: (username: string, password: string) =>
-    apiFetch<{ username: string }>('/api/auth/setup', { method: 'POST', body: json({ username, password }) }),
+    apiFetch<{ username: string }>('/api/auth/setup', {
+      method: 'POST',
+      body: json({ username, password }),
+    }),
   login: (username: string, password: string) =>
-    apiFetch<{ username: string }>('/api/auth/login', { method: 'POST', body: json({ username, password }) }),
+    apiFetch<{ username: string }>('/api/auth/login', {
+      method: 'POST',
+      body: json({ username, password }),
+    }),
   logout: () => apiFetch<{ ok: true }>('/api/auth/logout', { method: 'POST' }),
   updateAccount: (input: { username?: string; newPassword?: string; currentPassword: string }) =>
     apiFetch<{ username: string }>('/api/auth/account', { method: 'PATCH', body: json(input) }),
@@ -52,15 +61,17 @@ export interface PanelSettings {
   defaultPlayitKey: string | null;
   defaultMemoryMb: number;
   useGameCache: boolean;
-  /** Total RAM of the Docker host in MB — what the memory sliders cap themselves at, so the
-   *  ceiling reflects the actual machine instead of a hardcoded guess. */
+  /** Total RAM of the Docker host in MB. */
   hostMemoryMb: number;
 }
 
 export const settingsApi = {
   get: () => apiFetch<PanelSettings>('/api/settings'),
-  update: (input: { defaultPlayitKey?: string | null; defaultMemoryMb?: number; useGameCache?: boolean }) =>
-    apiFetch<PanelSettings>('/api/settings', { method: 'PATCH', body: json(input) }),
+  update: (input: {
+    defaultPlayitKey?: string | null;
+    defaultMemoryMb?: number;
+    useGameCache?: boolean;
+  }) => apiFetch<PanelSettings>('/api/settings', { method: 'PATCH', body: json(input) }),
 };
 
 // ---- game content cache ----
@@ -77,14 +88,15 @@ export interface CachedGame {
 
 export const gameCacheApi = {
   list: () => apiFetch<{ games: CachedGame[] }>('/api/game-cache'),
-  prewarm: (gameId: string) => apiFetch<{ started: boolean }>(`/api/game-cache/${gameId}/prewarm`, { method: 'POST' }),
-  remove: (gameId: string) => apiFetch<{ ok: boolean }>(`/api/game-cache/${gameId}`, { method: 'DELETE' }),
+  prewarm: (gameId: string) =>
+    apiFetch<{ started: boolean }>(`/api/game-cache/${gameId}/prewarm`, { method: 'POST' }),
+  remove: (gameId: string) =>
+    apiFetch<{ ok: boolean }>(`/api/game-cache/${gameId}`, { method: 'DELETE' }),
 };
 
 // ---- games / servers ----
 
-/** One server option a game exposes. Declared per game on the backend (GameDefinition.settings) and
- *  rendered generically by SettingsTab, so adding an option is a backend-only change. */
+/** One server option a game exposes. */
 export interface GameSettingField {
   key: string;
   label: string;
@@ -109,13 +121,18 @@ export interface GameDef {
   versionLabel: string | null;
   versionPlaceholder: string | null;
   moddable: boolean;
-  moddingKind: 'minecraft' | 'workshop-collection' | 'workshop-items' | null;
+  moddingKind: 'minecraft' | 'workshop-items' | null;
+  /** workshop-items only: whether this game also needs each mod's own internal Mod ID (Zomboid
+   *  does; tModLoader enables by Workshop ID alone). */
+  workshopRequiresModIds: boolean;
   moddedVariants: string[];
   bannerUrl: string | null;
   settings: GameSettingField[];
   playerManagement: { kill: boolean; banList: boolean; op: boolean } | null;
-  /** value -> display label for games with live map switching (TF2), e.g. "cp_badlands" ->
-   *  "Control Point — Badlands". Null for games without map switching. */
+  /**
+   * Value -> display label for games with live map switching (TF2), e.g. "cp_badlands" -> "Control
+   * Point — Badlands". Null otherwise.
+   */
   mapOptions: Record<string, string> | null;
   gamePortProtocol: 'tcp' | 'udp';
 }
@@ -136,8 +153,10 @@ export type ServerReadiness = 'offline' | 'crashed' | 'installing' | 'booting' |
 export interface PlayerSummary {
   current: number;
   max: number | null;
-  /** Currently-loaded map, only when the game's RCON dialect reports one (Source engine's `status`
-   *  does). Null for games that don't. */
+  /**
+   * Currently-loaded map, only when the game's RCON dialect reports one (Source engine's `status`
+   * does).
+   */
   map: string | null;
 }
 
@@ -158,28 +177,27 @@ export interface GameServer {
   createdAt: string;
   status: ServerStatus | null;
   readiness: ServerReadiness;
-  /** Which sub-phase of 'installing' this is — 'loader' (Forge/NeoForge downloading its own
-   *  library jars, unrelated to the pack) or 'mods' (itzg actually fetching pack mods live). Only
-   *  the 'mods' phase has a meaningful byte-count-vs-total percentage; null otherwise. */
+  /** Which sub-phase of 'installing' this is. */
   installPhase: 'loader' | 'mods' | null;
   players: PlayerSummary | null;
-  /** Wiki art for the currently-loaded map (TF2 only, when resolvable) — falls back to the game's
-   *  default banner (GameDef.bannerUrl) when null. */
+  /** Wiki art for the currently-loaded map (TF2 only, when resolvable) */
   mapBannerUrl: string | null;
-  /** Live-growing bytes in /data/mods while installPhase is 'mods' — null otherwise, including
-   *  during installPhase 'loader' (no meaningful byte count for that phase — see installPhase). */
+  /** Live-growing bytes in /data/mods while installPhase is 'mods'. */
   installBytes: number | null;
-  /** Sum of the file sizes itzg will actually fetch live during installPhase 'mods' (pack items
-   *  Outpost didn't already copy onto disk itself) — the expected total for installBytes, so the UI
-   *  can show a real percentage instead of just a climbing number. Null whenever installBytes is. */
+  /**
+   * Sum of the file sizes itzg will fetch live during installPhase 'mods' (pack items Outpost
+   * didn't already copy onto disk itself)
+   */
   installTotalBytes: number | null;
-  /** Set (to the removed filenames) the moment Outpost auto-detects a mod-loading crash from
-   *  Forge's own crash report and quarantines the offending file(s) + restarts — see
-   *  crashRecoveryService.ts. Only present on the poll where recovery just happened; null otherwise. */
+  /**
+   * Filenames removed by automatic crash recovery (see crashRecoveryService.ts). Only set on the
+   * poll where recovery happened.
+   */
   autoRecoveredMods: string[] | null;
-  /** JSON-encoded Record<string,string> of itzg env-var-style keys (ALLOW_FLIGHT, PVP, ...) — see
-   *  SettingsTab.tsx's behavior-settings section. Null/empty means every supported setting is at
-   *  the game's own default. */
+  /**
+   * JSON-encoded Record<string, string> of itzg env-var keys (ALLOW_FLIGHT, PVP, etc.). Null/empty
+   * means game defaults.
+   */
   extraSettings: string | null;
 }
 
@@ -197,9 +215,7 @@ export interface LiveStats {
 export const serversApi = {
   list: () => apiFetch<GameServer[]>('/api/servers'),
   get: (id: string) => apiFetch<GameServer>(`/api/servers/${id}`),
-  /** Cheap, RCON-free docker stats only — safe to poll once a second (see servers.ts route
-   *  comment); unlike `get`, never touches RCON/log-tailing, so it won't risk a Source-engine
-   *  anti-flood ban the way polling `get` that fast would. */
+  /** Cheap, RCON-free docker stats only. */
   stats: (id: string) => apiFetch<LiveStats>(`/api/servers/${id}/stats`),
   create: (input: {
     name: string;
@@ -208,7 +224,6 @@ export const serversApi = {
     version: string;
     memoryMb: number;
     packId?: string;
-    workshopCollectionId?: string;
     workshopItemIds?: string[];
     modIds?: string[];
     motd?: string;
@@ -219,9 +234,15 @@ export const serversApi = {
   remove: (id: string, deleteData: boolean) =>
     apiFetch<{ ok: true }>(`/api/servers/${id}?deleteData=${deleteData}`, { method: 'DELETE' }),
   updateMemory: (id: string, memoryMb: number) =>
-    apiFetch<GameServer>(`/api/servers/${id}/memory`, { method: 'PATCH', body: json({ memoryMb }) }),
+    apiFetch<GameServer>(`/api/servers/${id}/memory`, {
+      method: 'PATCH',
+      body: json({ memoryMb }),
+    }),
   updateSettings: (id: string, extraSettings: Record<string, string>) =>
-    apiFetch<GameServer>(`/api/servers/${id}/settings`, { method: 'PATCH', body: json({ extraSettings }) }),
+    apiFetch<GameServer>(`/api/servers/${id}/settings`, {
+      method: 'PATCH',
+      body: json({ extraSettings }),
+    }),
 };
 
 export interface MapControlStatus {
@@ -253,8 +274,12 @@ export interface TunnelStatus {
 export const tunnelApi = {
   get: (serverId: string) => apiFetch<TunnelStatus>(`/api/servers/${serverId}/tunnel`),
   enable: (serverId: string, secretKey: string) =>
-    apiFetch<{ enabled: true }>(`/api/servers/${serverId}/tunnel`, { method: 'POST', body: json({ secretKey }) }),
-  disable: (serverId: string) => apiFetch<{ ok: true }>(`/api/servers/${serverId}/tunnel`, { method: 'DELETE' }),
+    apiFetch<{ enabled: true }>(`/api/servers/${serverId}/tunnel`, {
+      method: 'POST',
+      body: json({ secretKey }),
+    }),
+  disable: (serverId: string) =>
+    apiFetch<{ ok: true }>(`/api/servers/${serverId}/tunnel`, { method: 'DELETE' }),
 };
 
 export interface BoreStatus {
@@ -269,8 +294,12 @@ export interface BoreStatus {
 
 export const boreApi = {
   get: (serverId: string) => apiFetch<BoreStatus>(`/api/servers/${serverId}/bore`),
-  enable: (serverId: string) => apiFetch<{ enabled: true; borePort: number }>(`/api/servers/${serverId}/bore`, { method: 'POST' }),
-  disable: (serverId: string) => apiFetch<{ ok: true }>(`/api/servers/${serverId}/bore`, { method: 'DELETE' }),
+  enable: (serverId: string) =>
+    apiFetch<{ enabled: true; borePort: number }>(`/api/servers/${serverId}/bore`, {
+      method: 'POST',
+    }),
+  disable: (serverId: string) =>
+    apiFetch<{ ok: true }>(`/api/servers/${serverId}/bore`, { method: 'DELETE' }),
 };
 
 export interface PlayerRef {
@@ -287,13 +316,18 @@ export interface SeenPlayer extends PlayerRef {
 }
 
 export const playersApi = {
-  list: (serverId: string) => apiFetch<{ players: PlayerRef[] }>(`/api/servers/${serverId}/players`),
-  banned: (serverId: string) => apiFetch<{ players: PlayerRef[] }>(`/api/servers/${serverId}/players/banned`),
-  /** Everyone RCON has ever seen connect, minus who's online or banned right now — so a player who
-   *  caused trouble and disconnected before an admin could act is still findable (and bannable). */
-  offline: (serverId: string) => apiFetch<{ players: SeenPlayer[] }>(`/api/servers/${serverId}/players/offline`),
+  list: (serverId: string) =>
+    apiFetch<{ players: PlayerRef[] }>(`/api/servers/${serverId}/players`),
+  banned: (serverId: string) =>
+    apiFetch<{ players: PlayerRef[] }>(`/api/servers/${serverId}/players/banned`),
+  /** Everyone RCON has ever seen connect, minus who's online or banned right now. */
+  offline: (serverId: string) =>
+    apiFetch<{ players: SeenPlayer[] }>(`/api/servers/${serverId}/players/offline`),
   action: (serverId: string, action: PlayerAction, player: PlayerRef) =>
-    apiFetch<{ ok: true }>(`/api/servers/${serverId}/players/action`, { method: 'POST', body: json({ action, player }) }),
+    apiFetch<{ ok: true }>(`/api/servers/${serverId}/players/action`, {
+      method: 'POST',
+      body: json({ action, player }),
+    }),
 };
 
 // ---- world (Minecraft-only) ----
@@ -309,17 +343,27 @@ export interface WorldSettings {
   hardcore: boolean;
   whitelist: boolean;
   running: boolean;
-  /** null per-rule when the server's offline (can't query RCON) or that query failed. */
+  /** Null per-rule when the server's offline (can't query RCON) or that query failed. */
   gamerules: Record<Gamerule, boolean | null> | null;
 }
 
 export const worldApi = {
   get: (serverId: string) => apiFetch<WorldSettings>(`/api/servers/${serverId}/world`),
-  update: (serverId: string, input: { difficulty?: Difficulty; gamemode?: Gamemode; whitelist?: boolean }) =>
-    apiFetch<WorldSettings>(`/api/servers/${serverId}/world`, { method: 'PATCH', body: json(input) }),
+  update: (
+    serverId: string,
+    input: { difficulty?: Difficulty; gamemode?: Gamemode; whitelist?: boolean },
+  ) =>
+    apiFetch<WorldSettings>(`/api/servers/${serverId}/world`, {
+      method: 'PATCH',
+      body: json(input),
+    }),
   setGamerule: (serverId: string, rule: Gamerule, value: boolean) =>
-    apiFetch<{ ok: true }>(`/api/servers/${serverId}/world/gamerules/${rule}`, { method: 'PATCH', body: json({ value }) }),
-  deleteWorld: (serverId: string) => apiFetch<{ ok: true }>(`/api/servers/${serverId}/world`, { method: 'DELETE' }),
+    apiFetch<{ ok: true }>(`/api/servers/${serverId}/world/gamerules/${rule}`, {
+      method: 'PATCH',
+      body: json({ value }),
+    }),
+  deleteWorld: (serverId: string) =>
+    apiFetch<{ ok: true }>(`/api/servers/${serverId}/world`, { method: 'DELETE' }),
 };
 
 // ---- files ----
@@ -352,10 +396,13 @@ export const filesApi = {
       `/api/servers/${serverId}/files/content?path=${encodeURIComponent(filePath)}`,
     ),
   writeContent: (serverId: string, filePath: string, content: string) =>
-    apiFetch<{ ok: true }>(`/api/servers/${serverId}/files/content?path=${encodeURIComponent(filePath)}`, {
-      method: 'PUT',
-      body: json({ content }),
-    }),
+    apiFetch<{ ok: true }>(
+      `/api/servers/${serverId}/files/content?path=${encodeURIComponent(filePath)}`,
+      {
+        method: 'PUT',
+        body: json({ content }),
+      },
+    ),
   remove: (serverId: string, filePath: string) =>
     apiFetch<{ ok: true }>(`/api/servers/${serverId}/files?path=${encodeURIComponent(filePath)}`, {
       method: 'DELETE',
@@ -377,9 +424,12 @@ export interface Backup {
 
 export const backupsApi = {
   list: (serverId: string) => apiFetch<Backup[]>(`/api/servers/${serverId}/backups`),
-  create: (serverId: string) => apiFetch<Backup>(`/api/servers/${serverId}/backups`, { method: 'POST' }),
+  create: (serverId: string) =>
+    apiFetch<Backup>(`/api/servers/${serverId}/backups`, { method: 'POST' }),
   restore: (serverId: string, backupId: string) =>
-    apiFetch<{ ok: true }>(`/api/servers/${serverId}/backups/${backupId}/restore`, { method: 'POST' }),
+    apiFetch<{ ok: true }>(`/api/servers/${serverId}/backups/${backupId}/restore`, {
+      method: 'POST',
+    }),
   remove: (serverId: string, backupId: string) =>
     apiFetch<{ ok: true }>(`/api/servers/${serverId}/backups/${backupId}`, { method: 'DELETE' }),
   downloadUrl: (serverId: string, backupId: string) =>
@@ -388,8 +438,159 @@ export const backupsApi = {
 
 // ---- modrinth / packs ----
 
-/** Optional narrowing for a mod search — all independent, all applied server-side so paging and
- *  result counts stay correct. */
+/** Optional narrowing for a mod search. */
+export interface PalworldModType {
+  value: string;
+  label: string;
+  /**
+   * False for the UE4SS-backed types, which have no working loader on the Linux dedicated server.
+   */
+  installable: boolean;
+  note: string;
+}
+
+// ---- steam workshop packs ----
+
+export interface WorkshopItemHit {
+  workshopItemId: string;
+  title: string;
+  description: string;
+  previewUrl: string | null;
+  subscriptions: number | null;
+}
+
+export interface WorkshopPackItem {
+  id: string;
+  workshopItemId: string;
+  title: string;
+  /**
+   * Only Project Zomboid needs this; null elsewhere, and null on a Zomboid item whose author didn't
+   * publish one in the usual format.
+   */
+  modId: string | null;
+  previewUrl: string | null;
+}
+
+export interface WorkshopPack {
+  id: string;
+  name: string;
+  game: string;
+  createdAt: string;
+  items: WorkshopPackItem[];
+  _count?: { items: number };
+}
+
+export const workshopPacksApi = {
+  games: () =>
+    apiFetch<{ games: { id: string; displayName: string; requiresModIds: boolean }[] }>(
+      '/api/workshop-games',
+    ),
+  list: () => apiFetch<WorkshopPack[]>('/api/workshop-packs'),
+  create: (name: string, game: string) =>
+    apiFetch<WorkshopPack>('/api/workshop-packs', { method: 'POST', body: json({ name, game }) }),
+  get: (id: string) => apiFetch<WorkshopPack>(`/api/workshop-packs/${id}`),
+  remove: (id: string) => apiFetch<void>(`/api/workshop-packs/${id}`, { method: 'DELETE' }),
+  search: (id: string, q: string, page = 1) =>
+    apiFetch<{ hits: WorkshopItemHit[] }>(
+      `/api/workshop-packs/${id}/search?${new URLSearchParams({ q, page: String(page) }).toString()}`,
+    ),
+  addItem: (id: string, workshopItemId: string) =>
+    apiFetch<WorkshopPack>(`/api/workshop-packs/${id}/items`, {
+      method: 'POST',
+      body: json({ workshopItemId }),
+    }),
+  setModId: (id: string, itemId: string, modId: string) =>
+    apiFetch<WorkshopPack>(`/api/workshop-packs/${id}/items/${itemId}`, {
+      method: 'PATCH',
+      body: json({ modId }),
+    }),
+  removeItem: (id: string, itemId: string) =>
+    apiFetch<WorkshopPack>(`/api/workshop-packs/${id}/items/${itemId}`, { method: 'DELETE' }),
+  importCollection: (id: string, collectionId: string) =>
+    apiFetch<{
+      pack: WorkshopPack;
+      imported: number;
+      unresolved: { workshopItemId: string; title: string }[];
+    }>(`/api/workshop-packs/${id}/import-collection`, {
+      method: 'POST',
+      body: json({ collectionId }),
+    }),
+};
+
+export interface FactorioModSummary {
+  name: string;
+  title: string;
+  owner: string;
+  summary: string;
+  downloadsCount: number;
+  category: string;
+  latestVersion: string | null;
+  factorioVersion: string | null;
+  downloadPageUrl: string;
+  pageUrl: string;
+}
+
+export const factorioModsApi = {
+  categories: () =>
+    apiFetch<{ categories: { value: string; label: string }[] }>('/api/factorio/categories'),
+  search: (q: string, category?: string, offset = 0) => {
+    const qs = new URLSearchParams({ q, offset: String(offset) });
+    if (category) qs.set('category', category);
+    return apiFetch<{ hits: FactorioModSummary[]; total: number }>(
+      `/api/factorio/mods?${qs.toString()}`,
+    );
+  },
+  dependencies: (name: string) =>
+    apiFetch<{ dependencies: string[] }>(
+      `/api/factorio/mods/${encodeURIComponent(name)}/dependencies`,
+    ),
+};
+
+export const palworldModsApi = {
+  filters: () =>
+    apiFetch<{ types: PalworldModType[]; tags: { value: string; label: string }[] }>(
+      '/api/curseforge/palworld/categories',
+    ),
+  search: (q: string, type: string, category?: string, offset = 0) => {
+    const qs = new URLSearchParams({ q, type, offset: String(offset) });
+    if (category) qs.set('category', category);
+    return apiFetch<{ hits: CurseForgeModSummary[] }>(
+      `/api/curseforge/palworld/mods?${qs.toString()}`,
+    );
+  },
+  install: (serverId: string, slug: string, fileId: number, category: string) =>
+    apiFetch<{ ok: boolean; files: string[]; installDir: string }>(
+      `/api/servers/${serverId}/palworld-mods`,
+      {
+        method: 'POST',
+        body: json({ slug, fileId, category }),
+      },
+    ),
+};
+
+export interface UpnpStatus {
+  /** False when the router never answered. */
+  supported: boolean;
+  /** Whether this server's port is forwarded right now, read back from the router itself. */
+  mapped: boolean;
+  externalIp: string | null;
+  gamePort: number;
+  protocol: 'tcp' | 'udp';
+  /** Raw upnpc output, shown when something failed so the actual reason is visible. */
+  output: string;
+}
+
+export const upnpApi = {
+  get: (serverId: string) => apiFetch<UpnpStatus>(`/api/servers/${serverId}/upnp`),
+  open: (serverId: string) =>
+    apiFetch<{ ok: boolean; externalIp: string | null; gamePort: number; protocol: string }>(
+      `/api/servers/${serverId}/upnp`,
+      { method: 'POST' },
+    ),
+  close: (serverId: string) =>
+    apiFetch<{ ok: boolean }>(`/api/servers/${serverId}/upnp`, { method: 'DELETE' }),
+};
+
 export interface ModSearchOptions {
   category?: string;
   sort?: string;
@@ -404,11 +605,9 @@ export interface ModrinthSearchHit {
   description: string;
   icon_url: string | null;
   downloads: number;
-  /** Modrinth's own curated side support. 'unsupported' means the mod can't run headless at all —
-   *  the UI marks these instead of letting someone add one that would crash the server on boot. */
+  /** Modrinth's own curated side support. 'unsupported' means the mod can't run headless at all. */
   server_side?: 'required' | 'optional' | 'unsupported';
-  /** Supported Minecraft versions, oldest first. Shown when browsing modpacks, which isn't filtered
-   *  by version — so each result has to say what it targets. */
+  /** Supported Minecraft versions, oldest first. */
   versions?: string[];
   /** Includes loader tags (fabric/forge/neoforge/quilt) alongside topic tags. */
   categories?: string[];
@@ -420,17 +619,32 @@ export interface PackItem {
   projectId: string | null;
   projectSlug: string | null;
   projectName: string;
+  /** Null for jars imported from a zip that matched no project. */
+  iconUrl: string | null;
   versionId: string | null;
   versionNumber: string | null;
   filename: string;
   isDependency: boolean;
 }
 
+/** Result of asking Modrinth whether this pack's project has published something newer. */
+export type PackUpdateStatus =
+  | { trackable: false }
+  | {
+      trackable: true;
+      available: boolean;
+      current: string | null;
+      latest?: string;
+      latestVersionId?: string;
+    };
+
 export interface Pack {
   id: string;
   name: string;
   mcVersion: string;
   loader: string;
+  modrinthProjectId?: string | null;
+  modrinthVersionNumber?: string | null;
   createdAt: string;
   items: PackItem[];
   _count?: { items: number };
@@ -438,24 +652,34 @@ export interface Pack {
 }
 
 export const modrinthApi = {
-  search: (q: string, mcVersion: string, loader: string, opts: ModSearchOptions = {}, offset = 0) => {
+  search: (
+    q: string,
+    mcVersion: string,
+    loader: string,
+    opts: ModSearchOptions = {},
+    offset = 0,
+  ) => {
     const qs = new URLSearchParams({ q, mcVersion, loader, offset: String(offset) });
     if (opts.category) qs.set('category', opts.category);
     if (opts.sort) qs.set('sort', opts.sort);
     if (opts.serverOnly) qs.set('serverOnly', 'true');
-    return apiFetch<{ hits: ModrinthSearchHit[]; total_hits: number }>(`/api/modrinth/search?${qs.toString()}`);
+    return apiFetch<{ hits: ModrinthSearchHit[]; total_hits: number }>(
+      `/api/modrinth/search?${qs.toString()}`,
+    );
   },
   filters: () =>
-    apiFetch<{ categories: { value: string; label: string }[]; sorts: { value: string; label: string }[] }>(
-      '/api/modrinth/filters',
-    ),
-  /** mcVersion/loader are optional filters. Left out, the whole catalogue is searched — which is
-   *  what you want when browsing, since a pack brings its own version and loader with it. */
+    apiFetch<{
+      categories: { value: string; label: string }[];
+      sorts: { value: string; label: string }[];
+    }>('/api/modrinth/filters'),
+  /** mcVersion/loader are optional filters. */
   searchModpacks: (q: string, mcVersion?: string, loader?: string, offset = 0) => {
     const qs = new URLSearchParams({ q, offset: String(offset) });
     if (mcVersion) qs.set('mcVersion', mcVersion);
     if (loader) qs.set('loader', loader);
-    return apiFetch<{ hits: ModrinthSearchHit[]; total_hits: number }>(`/api/modrinth/modpacks?${qs.toString()}`);
+    return apiFetch<{ hits: ModrinthSearchHit[]; total_hits: number }>(
+      `/api/modrinth/modpacks?${qs.toString()}`,
+    );
   },
   gameVersions: () => apiFetch<string[]>('/api/modrinth/game-versions'),
   searchPlugins: (q: string, mcVersion: string, offset = 0) =>
@@ -471,7 +695,7 @@ export interface CurseForgeModSummary {
   summary: string;
   logoUrl: string | null;
   gameVersion: string | null;
-  /** Borrowed from Modrinth by slug — CurseForge publishes no side info. Absent when unknown. */
+  /** Borrowed from Modrinth by slug. */
   clientSide?: 'required' | 'optional' | 'unsupported';
   serverSide?: 'required' | 'optional' | 'unsupported';
 }
@@ -480,7 +704,13 @@ export type ImportJobStatus =
   | { phase: 'resolving' }
   | { phase: 'downloading'; current: number; total: number }
   | { phase: 'matching'; current: number; total: number }
-  | { phase: 'done'; pack: Pack; format: string; unresolved: UnresolvedEntry[]; clientOnly: UnresolvedEntry[] }
+  | {
+      phase: 'done';
+      pack: Pack;
+      format: string;
+      unresolved: UnresolvedEntry[];
+      clientOnly: UnresolvedEntry[];
+    }
   | { phase: 'error'; error: string };
 
 export const curseforgeApi = {
@@ -494,13 +724,22 @@ export const curseforgeApi = {
       method: 'POST',
       body: json({ slug, fileId, mcVersion, loader, name }),
     }),
-  getImportJob: (jobId: string) => apiFetch<ImportJobStatus>(`/api/curseforge/import-jobs/${jobId}`),
-  searchMods: (q: string, mcVersion: string, loader: string, offset = 0) =>
-    apiFetch<{ hits: CurseForgeModSummary[] }>(
-      `/api/curseforge/mods?q=${encodeURIComponent(q)}&mcVersion=${encodeURIComponent(mcVersion)}&loader=${encodeURIComponent(loader)}&offset=${offset}`,
-    ),
-  addMod: (packId: string, slug: string, fileId: number) =>
-    apiFetch<{ pack: Pack }>('/api/curseforge/mods/add', { method: 'POST', body: json({ packId, slug, fileId }) }),
+  getImportJob: (jobId: string) =>
+    apiFetch<ImportJobStatus>(`/api/curseforge/import-jobs/${jobId}`),
+  searchMods: (q: string, mcVersion: string, loader: string, category?: string, offset = 0) => {
+    const qs = new URLSearchParams({ q, mcVersion, loader, offset: String(offset) });
+    if (category) qs.set('category', category);
+    return apiFetch<{ hits: CurseForgeModSummary[] }>(`/api/curseforge/mods?${qs.toString()}`);
+  },
+  categories: () =>
+    apiFetch<{ categories: { value: string; label: string }[] }>('/api/curseforge/categories'),
+  // logoUrl comes from the clicked search result: CurseForge-only mods have no Modrinth project to
+  // backfill artwork from later.
+  addMod: (packId: string, slug: string, fileId: number, logoUrl?: string | null) =>
+    apiFetch<{ pack: Pack }>('/api/curseforge/mods/add', {
+      method: 'POST',
+      body: json({ packId, slug, fileId, logoUrl }),
+    }),
 };
 
 export interface ServerPlugin {
@@ -514,11 +753,41 @@ export interface ServerPlugin {
 }
 
 export const pluginsApi = {
-  list: (serverId: string) => apiFetch<{ plugins: ServerPlugin[]; mcVersion: string }>(`/api/servers/${serverId}/plugins`),
+  list: (serverId: string) =>
+    apiFetch<{ plugins: ServerPlugin[]; mcVersion: string }>(`/api/servers/${serverId}/plugins`),
   add: (serverId: string, projectId: string, versionId?: string) =>
-    apiFetch<ServerPlugin>(`/api/servers/${serverId}/plugins`, { method: 'POST', body: json({ projectId, versionId }) }),
+    apiFetch<ServerPlugin>(`/api/servers/${serverId}/plugins`, {
+      method: 'POST',
+      body: json({ projectId, versionId }),
+    }),
   remove: (serverId: string, itemId: string) =>
     apiFetch<{ ok: true }>(`/api/servers/${serverId}/plugins/${itemId}`, { method: 'DELETE' }),
+};
+
+// ---- storage / orphaned server data ----
+
+export interface OrphanDir {
+  id: string;
+  sizeBytes: number;
+  modifiedAt: string;
+  guessedGame: string | null;
+  guessedGameName: string | null;
+  sample: string[];
+  empty: boolean;
+}
+
+export const storageApi = {
+  orphans: () => apiFetch<{ orphans: OrphanDir[]; totalBytes: number }>('/api/storage/orphans'),
+  restore: (
+    id: string,
+    input: { game: string; name: string; variant?: string; version?: string; memoryMb: number },
+  ) =>
+    apiFetch<GameServer>(`/api/storage/orphans/${id}/restore`, {
+      method: 'POST',
+      body: json(input),
+    }),
+  remove: (id: string) =>
+    apiFetch<{ ok: true }>(`/api/storage/orphans/${id}`, { method: 'DELETE' }),
 };
 
 export const packsApi = {
@@ -528,12 +797,26 @@ export const packsApi = {
     apiFetch<Pack>('/api/packs', { method: 'POST', body: json(input) }),
   remove: (id: string) => apiFetch<{ ok: true }>(`/api/packs/${id}`, { method: 'DELETE' }),
   addItem: (packId: string, projectId: string, versionId?: string) =>
-    apiFetch<Pack>(`/api/packs/${packId}/items`, { method: 'POST', body: json({ projectId, versionId }) }),
+    apiFetch<Pack>(`/api/packs/${packId}/items`, {
+      method: 'POST',
+      body: json({ projectId, versionId }),
+    }),
   removeItem: (packId: string, itemId: string) =>
     apiFetch<{ ok: true }>(`/api/packs/${packId}/items/${itemId}`, { method: 'DELETE' }),
   deploy: (packId: string, name: string, memoryMb: number, motd?: string) =>
-    apiFetch<GameServer>(`/api/packs/${packId}/deploy`, { method: 'POST', body: json({ name, memoryMb, motd }) }),
+    apiFetch<GameServer>(`/api/packs/${packId}/deploy`, {
+      method: 'POST',
+      body: json({ name, memoryMb, motd }),
+    }),
   exportUrl: (packId: string) => `/api/packs/${packId}/export`,
+  checkUpdate: (packId: string) => apiFetch<PackUpdateStatus>(`/api/packs/${packId}/update`),
+  applyUpdate: (packId: string) =>
+    apiFetch<{
+      pack: Pack;
+      version: string;
+      unresolved: UnresolvedEntry[];
+      clientOnly: UnresolvedEntry[];
+    }>(`/api/packs/${packId}/update`, { method: 'POST' }),
   import: (file: File, overrides: { name?: string; mcVersion?: string; loader?: string }) => {
     const form = new FormData();
     form.append('file', file);
@@ -547,8 +830,7 @@ export const packsApi = {
       method: 'POST',
       body: json({ mcVersion, loader }),
     }),
-  /** Imports an uploaded pack INTO an already-existing one, instead of creating a new one.
-   *  `replace: true` clears the pack's current mods first; otherwise the import is merged in. */
+  /** Imports an uploaded pack INTO an already-existing one, instead of creating a new one. */
   importInto: (packId: string, file: File, replace: boolean) => {
     const form = new FormData();
     form.append('file', file);
@@ -578,5 +860,8 @@ export interface ResolvedCollection {
 
 export const steamWorkshopApi = {
   resolveCollection: (collectionId: string) =>
-    apiFetch<ResolvedCollection>('/api/steam-workshop/resolve-collection', { method: 'POST', body: json({ collectionId }) }),
+    apiFetch<ResolvedCollection>('/api/steam-workshop/resolve-collection', {
+      method: 'POST',
+      body: json({ collectionId }),
+    }),
 };

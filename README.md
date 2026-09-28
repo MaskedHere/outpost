@@ -1,41 +1,113 @@
 # Outpost
 
-Outpost is a free, open-source game server panel built for [ZimaOS](https://www.zimaspace.com/zimaos)
-(and any other Docker-capable NAS/Linux box). It's an alternative to paying a monthly fee for
-Minecraft/game hosting just so a friend group can play together for a couple of weeks: spin up a
-server in a couple of clicks, build a modpack right in the app, and hand your friends a
-ready-to-play client pack with one button.
+[![CI](https://github.com/MaskedHere/outpost/actions/workflows/ci.yml/badge.svg)](https://github.com/MaskedHere/outpost/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **Status: early / MVP.** The core loop works end-to-end (see below), but this is a young project.
-> See [Roadmap](#roadmap) for what's deliberately not built yet.
+**A self-hosted game server panel for your home NAS.** Spin up a server for the group chat in a
+couple of clicks, build a modpack in the browser, and hand your friends a one-click client pack.
+No monthly hosting bill.
 
-## What it does
+Outpost runs as a single Docker container on [ZimaOS](https://www.zimaspace.com/zimaos) or any
+Docker-capable Linux box, and manages each game server as its own sibling container.
 
-- **Run game servers as Docker containers**, managed from a clean web UI — no PufferPanel/AMP
-  license, no per-server monthly fee. Minecraft (vanilla, Paper, Fabric, Forge, NeoForge, Quilt,
-  plus a BungeeCord/Waterfall/Velocity proxy), Terraria, Factorio, Valheim, Team Fortress 2, 7 Days
-  to Die, and Project Zomboid, all free to run (no purchase or paid Steam account needed for the
-  dedicated server itself). More on the roadmap.
-- **Live console** with real commands (RCON) where the game supports it, a **file manager**, and
-  one-click **backups** for every server.
-- **Modpack Studio**: search [Modrinth](https://modrinth.com), build a pack, and either deploy it
-  straight to a new server or **export a standard `.mrpack`** your friends open with one click in
-  the Modrinth App or Prism Launcher — no rehosting mod jars, no messing with `mods/` folders by
-  hand. Packs are also importable from an existing `.mrpack`, a CurseForge modpack zip, or a plain
-  zip of `.jar` mods.
+## Why I built this
 
-## Install on ZimaOS
+I run a ZimaOS NAS at home, and every so often my friends and I want to play something together:
+a modded Minecraft pack one month, Valheim or Palworld the next. The options were paying a hosting
+company monthly for something we'd play for two weeks, or SSH-ing into the NAS to hand-edit compose
+files, env vars, and `mods/` folders every time. Existing panels either cost money (AMP) or expect
+a dedicated server setup with a separate daemon to run alongside them.
 
-See [`docs/ZIMAOS_INSTALL.md`](docs/ZIMAOS_INSTALL.md). Short version: import
-[`packaging/docker-compose.yml`](packaging/docker-compose.yml) as a custom app, set a real
-`JWT_SECRET`, and open the app to create your admin account.
+I wanted one app, one install, and a UI clean enough that a friend could run a server without
+calling me. Outpost is that tool. I use it on my own NAS, and most features exist because I hit
+the problem myself.
 
-Outpost isn't in the ZimaOS/CasaOS community App Store yet — that's on the roadmap. It works today
-via manual/custom install.
+## Features
 
-**Security note:** Outpost manages sibling containers through the host's Docker socket, which gives
-it root-equivalent power on the machine (same model as Portainer/Watchtower). Don't expose it
-directly to the internet, and set the admin password immediately on first launch.
+- **10 games, one panel.** Minecraft Java (vanilla, Paper, Fabric, Forge, NeoForge, Quilt, plus a
+  Velocity/Waterfall/BungeeCord proxy), Minecraft Bedrock, Terraria and tModLoader, Factorio,
+  Valheim, Palworld, Team Fortress 2, 7 Days to Die, and Project Zomboid. All of them run free,
+  with no game purchase or paid Steam account needed for the dedicated server.
+- **Real server management.** Live console with RCON commands, file manager, one-click backups and
+  restores, a live CPU/RAM/player graph, and player management (kick, ban, op) where the game
+  supports it.
+- **Modpack Studio.** Search Modrinth and CurseForge, add mods with their required dependencies
+  resolved and pinned automatically, deploy the pack to a server, and export a standard `.mrpack`
+  that friends open in one click with the Modrinth App or Prism Launcher. Existing packs import from
+  `.mrpack`, CurseForge modpacks and server packs, or a plain zip of jars, and packs imported from
+  Modrinth can check for and move to the newest release.
+- **More mod sources.** Reusable Steam Workshop packs (Project Zomboid, tModLoader), Factorio Mod
+  Portal browsing, CurseForge Palworld mods, and Paper plugins from Modrinth.
+- **Public access without router surgery.** Per server, choose automatic UPnP port mapping, a
+  playit.gg tunnel, or a bore.pub relay.
+- **Built to recover on its own.** Crash-loop detection, automatic quarantine of the mod named in a
+  Forge crash report, readiness checks that wait for the game (not just the container), a shared
+  per-game cache so new SteamCMD servers skip multi-GB downloads, and recovery of orphaned server
+  data after a reinstall.
+
+## Quick start
+
+Outpost needs Docker and access to the Docker socket.
+
+```bash
+docker run -d \
+  --name outpost \
+  --restart unless-stopped \
+  -p 7420:3000 \
+  -e JWT_SECRET="$(openssl rand -hex 32)" \
+  -e RCON_HOST=host.docker.internal \
+  -e HOST_DATA_DIR=/DATA/AppData/outpost \
+  --add-host host.docker.internal:host-gateway \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /DATA/AppData/outpost:/data \
+  ghcr.io/maskedhere/outpost:latest
+```
+
+Open `http://<your-nas>:7420` and create the admin account. On ZimaOS you can instead import
+[`packaging/docker-compose.yml`](packaging/docker-compose.yml) as a custom app. The full guide is
+in [`docs/ZIMAOS_INSTALL.md`](docs/ZIMAOS_INSTALL.md).
+
+> **Security:** Outpost controls the host's Docker daemon, which is root-equivalent access (the
+> same trust model as Portainer). Run it only on hardware you own, keep it off the public internet,
+> and set the admin password on first launch. It refuses to start with a placeholder `JWT_SECRET`.
+
+## How it works
+
+- **Backend:** Node.js 22, TypeScript, and Fastify serve a REST API plus a WebSocket console
+  stream. Prisma manages a SQLite database, with migrations applied automatically on container
+  start. `dockerode` drives the Docker daemon.
+- **Games are plugins.** Each game is a `GameDefinition` in `apps/backend/src/games/` that maps a
+  user's choices (variant, version, memory, settings) to a container spec: image, ports, volumes,
+  and env. Adding a game doesn't touch routes, lifecycle code, or the frontend. The Settings tab
+  renders each game's options from a declarative schema.
+- **One RCON client for everything.** A from-scratch implementation of Valve's binary Source RCON
+  protocol covers Minecraft, Factorio, Palworld, Project Zomboid, and TF2.
+- **Frontend:** React, Vite, TypeScript, and Tailwind, built to static files and served by the
+  backend, so the whole app is one container on one port.
+- **CI:** GitHub Actions lints, generates the Prisma client, and builds both apps on every push.
+
+The full write-up is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## Extra notes worth reading if your truely interested
+
+A few problems that took real debugging, and how Outpost handles them:
+
+- **"Running" isn't "ready."** Docker reports a container as running long before the world has
+  loaded, and a bare TCP probe can succeed against a host-side proxy before anything is listening.
+  Outpost confirms readiness with an authenticated RCON round trip, or a game-specific log line for
+  games without RCON.
+- **Probing Terraria costs a save.** Connecting to Terraria's game port makes the server treat
+  the probe as a joining player and run a full save cycle, so its readiness comes from the log
+  instead.
+- **Crash loops hide behind restart policies.** Under `unless-stopped`, a crashing container is
+  back within seconds, so polling only ever saw a fresh boot. Outpost watches Docker's
+  `RestartCount`, and when a Forge crash report names the mod that broke the boot, it moves that
+  file aside and restarts.
+- **Bind mounts resolve on the host.** Outpost creates containers through the host's daemon, so
+  paths have to be translated from Outpost's own `/data` to the host path (`HOST_DATA_DIR`).
+  Otherwise the daemon fails with `mkdir /data: read-only file system`.
+- **Log streaming.** `dockerode`'s attach and log streams didn't reliably deliver data on the
+  Docker transports I tested, so the live console streams `docker logs -f` from the bundled CLI.
 
 ## Local development
 
@@ -43,77 +115,48 @@ Requires Node.js 22+ and a running Docker daemon.
 
 ```bash
 npm install
-cp apps/backend/.env.example apps/backend/.env   # then edit JWT_SECRET
+cp apps/backend/.env.example apps/backend/.env   # then set JWT_SECRET
 npm run prisma:migrate
-npm run dev:backend    # http://localhost:3000 (API)
-npm run dev:frontend   # http://localhost:5173 (UI, proxies /api and /ws to :3000)
+npm run dev:backend    # API on http://localhost:3000
+npm run dev:frontend   # UI on http://localhost:5173 (proxies /api and /ws to :3000)
 ```
 
-Local server/backup/db data lands in `.data/` at the repo root (gitignored).
+Local server, backup, and database data lands in `.data/` at the repo root (gitignored).
 
 ```bash
 npm run lint
-npm run build           # builds both apps
+npm run build                                   # both apps
 docker build -f packaging/Dockerfile -t outpost .
 ```
 
 ## Releasing
 
-The `version` field in the repo-root `package.json` is the single source of truth for a release. It
-is stamped into the faint version label in the UI's bottom-right corner at build time, and is what
-the published image should be tagged with — so the number on screen always identifies the exact
-build a machine is running, which is the quickest way to tell whether a deploy actually landed.
-
-Bump it once per release, then build and push both tags together:
+The `version` in the root `package.json` is the single source of truth. It's stamped into the
+version label in the UI's bottom-right corner at build time and used as the image tag, so the
+number on screen always identifies the exact build a machine is running.
 
 ```bash
-npm version patch --no-git-tag-version    # or edit package.json by hand
+npm version patch --no-git-tag-version
 npm run build
 VERSION=$(node -p "require('./package.json').version")
-docker build -f packaging/Dockerfile -t ghcr.io/<owner>/outpost:latest -t ghcr.io/<owner>/outpost:"$VERSION" .
-docker push ghcr.io/<owner>/outpost:latest
-docker push ghcr.io/<owner>/outpost:"$VERSION"
+docker build -f packaging/Dockerfile -t ghcr.io/maskedhere/outpost:latest -t ghcr.io/maskedhere/outpost:"$VERSION" .
+docker push ghcr.io/maskedhere/outpost:latest
+docker push ghcr.io/maskedhere/outpost:"$VERSION"
 ```
 
-Keeping `latest` and the version tag on the same digest means a NAS pulling `latest` reports the
-same version the label shows.
-
-## Architecture
-
-One container, Fastify + TypeScript backend, React + TypeScript frontend, SQLite via Prisma,
-`dockerode` to drive the host's Docker daemon, and the battle-tested
-[`itzg/docker-minecraft-server`](https://github.com/itzg/docker-minecraft-server) image doing the
-actual Minecraft server bootstrapping. Full write-up in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+On ZimaOS, update by changing the image tag **and restarting the app**. Changing the tag alone
+doesn't pull the new image.
 
 ## Roadmap
 
-Built and working today: server lifecycle (create/start/stop/restart/delete), live console (RCON
-where the game supports it), file manager, backups, Modrinth-backed modpack studio with dependency
-resolution + `.mrpack`/CurseForge/zip import, `.mrpack` export, Docker packaging, and 8 games
-beyond Minecraft (see above) via the `GameDefinition` plugin seam in `apps/backend/src/games/`.
-
-Known gap: Garry's Mod has a working `GameDefinition` but its dedicated server segfaults on boot
-against every Docker image tried so far (`Gamemode "sandbox" doesn't exist!` right before the
-crash, despite the gamemode files being present on disk) — a known-hard-to-diagnose class of issue
-for Source-engine servers. It's registered but not recommended until someone can dig further.
-
-Deliberately not yet built:
-
-- ARMA 3 (its dedicated server generally needs a paid Steam account, not just anonymous SteamCMD
-  login, so it doesn't fit the "no purchase required" bar the other games meet)
-- More PufferPanel-parity games (Rust, ARK, CS2, Squad, Starbound, Vintage Story, Eco, ...) —
-  straightforward to add via the same `GameDefinition` seam, just not done yet
-- Multi-user accounts / role-based access (currently: one admin account)
-- Scheduled/automatic backups (manual backup button exists; no cron yet)
-- Forge/NeoForge loader-version pinning in exported `.mrpack` files (Fabric/Quilt are fully
-  supported; Forge/NeoForge packs still export but omit the exact loader-build pin — see
-  `apps/backend/src/modrinth/loaderVersions.ts`)
-- Submission to the ZimaOS/CasaOS community App Store
-- Mobile-polished UI, i18n, automated update checks, a real test suite
-
-Contributions welcome — open an issue or PR.
+- More games (Rust, ARK, CS2, Vintage Story, and others) through the same `GameDefinition`
+  interface
+- Multi-user accounts with role-based access (currently one admin account)
+- Scheduled backups (manual backups work today)
+- Forge/NeoForge loader-version pinning in exported `.mrpack` files (Fabric and Quilt are pinned)
+- An automated test suite
+- Listing in the ZimaOS/CasaOS community App Store
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) © 2026 Lamar Nielsen

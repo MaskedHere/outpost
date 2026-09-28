@@ -2,12 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { GameDefinition } from './types.js';
 
-// ghcr.io/ich777/steamcmd:7dtd — part of the actively-maintained ich777 Unraid game-server image
-// family (also used for Garry's Mod below, after renegademaster/7_days_to_die-dedicated-server
-// turned out to be a single 2022 image tag with no `latest`, unlikely to still work against the
-// current game version). Free dedicated server depot (SteamCMD app id 294420, no purchase or
-// Steam account required). No confirmed RCON/telnet support here, so it's logs-only — still real
-// value (status, start/stop, backups, files).
+// ghcr.io/ich777/steamcmd:7dtd, part of the maintained ich777 SteamCMD image family.
 const IMAGE = 'ghcr.io/ich777/steamcmd:7dtd';
 
 export const sevenDaysToDieDefinition: GameDefinition = {
@@ -17,12 +12,10 @@ export const sevenDaysToDieDefinition: GameDefinition = {
   versionLabel: null,
   moddable: false,
   steamAppId: 251570,
-  // The TCP port here is really the telnet/admin control channel — actual player traffic goes
-  // over the UDP ports alongside it, so this doesn't qualify for the TCP-only bore.pub tunnel.
+  // The TCP port here is the telnet/admin control channel.
   gamePortProtocol: 'udp',
-  // /serverdata/serverfiles is the SteamCMD install target, but this image also wants
-  // serverconfig.xml living right alongside the game files (written by preCreate below) — that one
-  // file is per-server and is kept out of the shared cache.
+  // /serverdata/serverfiles is the SteamCMD install target; serverconfig.xml is written alongside
+  // it by preCreate.
   contentCache: { subdir: 'server', approxSizeLabel: '~14 GB', exclude: ['serverconfig.xml'] },
   // Each key is a real 7 Days to Die serverconfig.xml property name, written verbatim into the
   // generated file by preCreate below.
@@ -61,7 +54,7 @@ export const sevenDaysToDieDefinition: GameDefinition = {
     {
       key: 'GameDifficulty',
       label: 'Difficulty',
-      info: 'Scales how much damage zombies deal and take. 1 (Scavenger) is the gentlest, 5 (Insane) the harshest; 2 is the game\'s own default.',
+      info: "Scales how much damage zombies deal and take. 1 (Scavenger) is the gentlest, 5 (Insane) the harshest; 2 is the game's own default.",
       type: 'select',
       default: '2',
       options: [
@@ -130,7 +123,11 @@ export const sevenDaysToDieDefinition: GameDefinition = {
     return {
       image: IMAGE,
       containerName,
-      env: ['GAME_ID=294420', 'SERVERCONFIG=serverconfig.xml', 'GAME_PARAMS=-logfile 7DaysToDie_Data/output_log.txt $@'],
+      env: [
+        'GAME_ID=294420',
+        'SERVERCONFIG=serverconfig.xml',
+        'GAME_PARAMS=-logfile 7DaysToDie_Data/output_log.txt $@',
+      ],
       ports: [
         { containerPort: 26900, protocol: 'tcp', purpose: 'game' },
         { containerPort: 26900, protocol: 'udp', purpose: 'extra' },
@@ -143,9 +140,8 @@ export const sevenDaysToDieDefinition: GameDefinition = {
       ],
       memoryMb,
       dataPath,
-      // Rewritten on every container create rather than only when missing, so changing a setting
-      // on the Settings tab actually takes effect — the container rebuild is what applies it. The
-      // world save lives elsewhere in this directory and is untouched by this.
+      // Rewritten on every container create rather than only when missing, so changing a setting on
+      // the Settings tab takes effect.
       async preCreate(hostPaths) {
         const xmlSafe = (value: string) => value.replace(/[<>&"']/g, '');
         const properties: Record<string, string> = {

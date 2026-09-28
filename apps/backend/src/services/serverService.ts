@@ -5,7 +5,12 @@ import { prisma } from '../db/client.js';
 import type { PackItem } from '../../generated/prisma/index.js';
 import { config } from '../config.js';
 import { getGameDefinition } from '../games/registry.js';
-import { createServerContainer, getContainer, removeContainer, stopContainer } from '../docker/containers.js';
+import {
+  createServerContainer,
+  getContainer,
+  removeContainer,
+  stopContainer,
+} from '../docker/containers.js';
 import { allocatePorts } from '../docker/ports.js';
 import { startInstallingMaps } from './tf2MapsService.js';
 import { changeMap } from './mapService.js';
@@ -20,34 +25,47 @@ export class ServerCreationError extends Error {
   }
 }
 
-/** Whether a pack item deploys via itzg's MODRINTH_PROJECTS mechanism (fetched from Modrinth's CDN
- *  at container start) or by copying an already-downloaded file straight into the server's mods
- *  folder (see copyLocalPackItems) comes down to localFilePath, not PackItem.source — a CurseForge
- *  Server Pack's embedded jar that hash-matched a Modrinth project is still source: 'modrinth' (for
- *  a real display name/version, and .mrpack export), but Outpost already has its exact bytes on
- *  disk, so it deploys from there rather than redundantly re-fetching the same file from Modrinth. */
-function modrinthOnly(items: { projectId: string | null; versionId: string | null; localFilePath: string | null }[]) {
+/**
+ * Deploy method depends on localFilePath, not PackItem.source: items with a stored file are copied
+ * into the mods folder (see copyLocalPackItems); the rest are fetched from Modrinth's CDN via
+ * MODRINTH_PROJECTS.
+ */
+function modrinthOnly(
+  items: { projectId: string | null; versionId: string | null; localFilePath: string | null }[],
+) {
   return items
     .filter((item) => item.projectId && item.versionId && !item.localFilePath)
     .map((item) => ({ projectId: item.projectId!, versionId: item.versionId! }));
 }
 
-async function copyLocalPackItems(dataPath: string, items: { localFilePath: string | null; filename: string }[]) {
+async function copyLocalPackItems(
+  dataPath: string,
+  items: { localFilePath: string | null; filename: string }[],
+) {
   const localItems = items.filter((item) => item.localFilePath);
   if (localItems.length === 0) return;
   const modsDir = path.join(dataPath, 'mods');
   await fs.mkdir(modsDir, { recursive: true });
   await Promise.all(
-    localItems.map((item) => fs.copyFile(path.join(config.packsDir, item.localFilePath!), path.join(modsDir, item.filename))),
+    localItems.map((item) =>
+      fs.copyFile(
+        path.join(config.packsDir, item.localFilePath!),
+        path.join(modsDir, item.filename),
+      ),
+    ),
   );
 }
 
-/** Mirrors a CurseForge pack's stored overrides/ folder (configs, resourcepacks, scripts — see
- *  modpacks.ts's persistOverrideFiles) directly into the new server's dataPath, same relative
- *  layout (overrides/config/x.toml -> dataPath/config/x.toml). A no-op if the pack has none. */
+/**
+ * Mirrors a CurseForge pack's stored overrides/ folder (configs, resourcepacks, scripts - see
+ * modpacks.ts's persistOverrideFiles) directly into the new server's dataPath, same relative layout
+ * (overrides/config/x.toml -> dataPath/config/x.toml).
+ */
 async function copyPackOverrides(dataPath: string, packId: string) {
   const overridesDir = path.join(config.packsDir, packId, 'overrides');
-  const entries = await fs.readdir(overridesDir, { withFileTypes: true, recursive: true }).catch(() => []);
+  const entries = await fs
+    .readdir(overridesDir, { withFileTypes: true, recursive: true })
+    .catch(() => []);
   await Promise.all(
     entries
       .filter((e) => e.isFile())
@@ -68,14 +86,14 @@ export interface CreateServerInput {
   version?: string;
   memoryMb: number;
   packId?: string;
-  workshopCollectionId?: string;
   workshopItemIds?: string[];
   modIds?: string[];
   motd?: string;
   extraSettings?: Record<string, string>;
-  /** Seed this server from the shared game-content cache instead of letting it download the whole
-   *  game from Steam again (see contentCacheService). Defaults to on; turning it off gives a server
-   *  that fetches everything itself — slower, but it keeps nothing pre-staged on disk. */
+  /**
+   * Seed this server from the shared game-content cache instead of letting it download the whole
+   * game from Steam again (see contentCacheService).
+   */
   useContentCache?: boolean;
 }
 
@@ -87,7 +105,10 @@ export async function createServer(input: CreateServerInput) {
   const game = input.packId ? 'minecraft' : (input.game ?? 'minecraft');
 
   if (input.packId) {
-    const pack = await prisma.pack.findUnique({ where: { id: input.packId }, include: { items: true } });
+    const pack = await prisma.pack.findUnique({
+      where: { id: input.packId },
+      include: { items: true },
+    });
     if (!pack) throw new ServerCreationError('Pack not found', 404);
     variant = pack.loader;
     version = pack.mcVersion;
@@ -97,7 +118,10 @@ export async function createServer(input: CreateServerInput) {
 
   const gameDef = getGameDefinition(game);
   if (!gameDef.variants.includes(variant)) {
-    throw new ServerCreationError(`Unsupported variant for ${gameDef.displayName}: ${variant}`, 400);
+    throw new ServerCreationError(
+      `Unsupported variant for ${gameDef.displayName}: ${variant}`,
+      400,
+    );
   }
 
   const id = crypto.randomUUID();
@@ -117,19 +141,15 @@ export async function createServer(input: CreateServerInput) {
     version,
     rconPassword,
     modrinthMods,
-    workshopCollectionId: input.workshopCollectionId,
     workshopItemIds: input.workshopItemIds,
     modIds: input.modIds,
     motd: input.motd,
     extraSettings: input.extraSettings,
   });
 
-  // Seed the game files from the shared cache before the container ever starts, so its SteamCMD
-  // pass finds everything already on disk and just verifies instead of re-downloading it all.
-  // Wrapping preCreate (rather than editing containers.ts) puts this at exactly the right moment:
-  // after the volume directories exist, but before any game def writes its own per-server files
-  // into them — which matters for 7 Days to Die, whose serverconfig.xml lives in the same directory
-  // and must end up being this server's copy, not the cached one's.
+  // Seed game files from the shared cache before the container starts, so SteamCMD only verifies
+  // instead of re-downloading. Wrapping preCreate runs this after the volume directories exist but
+  // before any game writes its own per-server files.
   if (gameDef.contentCache && input.useContentCache !== false) {
     const cacheSubdir = gameDef.contentCache.subdir;
     const gameOwnPreCreate = spec.preCreate;
@@ -143,7 +163,8 @@ export async function createServer(input: CreateServerInput) {
   const hostPorts = await allocatePorts(spec.ports.length);
   const gamePortIndex = spec.ports.findIndex((p) => p.purpose === 'game');
   const rconPortIndex = spec.ports.findIndex((p) => p.purpose === 'rcon');
-  if (gamePortIndex === -1) throw new Error(`${gameDef.displayName} container spec has no 'game' port`);
+  if (gamePortIndex === -1)
+    throw new Error(`${gameDef.displayName} container spec has no 'game' port`);
 
   let containerId: string;
   try {
@@ -176,25 +197,20 @@ export async function createServer(input: CreateServerInput) {
       containerName,
       gamePort: hostPorts[gamePortIndex]!,
       rconPort,
-      // Stored even when this game has no RCON port: some defs (Valheim) reuse this generated
-      // secret as a game join password instead, and it's useful to surface either way.
+      // Stored even without an RCON port: some games (Valheim) reuse it as the join password.
       rconPassword,
       memoryMb: input.memoryMb,
       dataPath,
       packId: input.packId ?? null,
       motd: input.motd ?? null,
-      workshopCollectionId: input.workshopCollectionId ?? null,
       workshopItemIds: input.workshopItemIds ? JSON.stringify(input.workshopItemIds) : null,
       modIds: input.modIds ? JSON.stringify(input.modIds) : null,
       extraSettings: input.extraSettings ? JSON.stringify(input.extraSettings) : null,
     },
   });
 
-  // TF2 always boots on cp_badlands (the only map baked into the base image — see tf2.ts) since
-  // every other stock map needs a one-time steamcmd validate pass to exist on disk at all. If the
-  // player picked something else, kick that install off now instead of leaving them stuck on
-  // badlands until they notice and hit "Install extra maps" themselves, and land on their actual
-  // choice automatically once it's done.
+  // TF2 always boots on cp_badlands (the only map baked into the base image - see tf2.ts) since
+  // every other stock map needs a one-time steamcmd validate pass to exist on disk at all.
   if (game === 'tf2' && variant !== 'cp_badlands') {
     startInstallingMaps(containerId, (ok) => {
       if (!ok) return;
@@ -205,16 +221,16 @@ export async function createServer(input: CreateServerInput) {
   return created;
 }
 
-/** Docker has no way to change an existing container's env vars (e.g. Minecraft's JVM heap comes
- *  from a MEMORY env var baked in at creation), so the only correct way to change memory after the
- *  fact is to rebuild the container from the exact same spec with the new value — a live
- *  `docker update --memory` alone would raise the cgroup cap but leave the JVM's -Xmx untouched.
- *  Reuses the same container name, data path, and — critically — the exact same host ports, so
- *  nothing depending on them (the stored gamePort/rconPort, an active tunnel) needs to change.
- *  extraSettings works the same way (env vars baked in at creation, so a behavior setting like
- *  allow-flight needs the same rebuild too) — omit it to leave the server's current settings as-is,
- *  or pass an object (including {}) to replace them outright. */
-export async function updateServerMemory(serverId: string, memoryMb: number, extraSettings?: Record<string, string>) {
+/**
+ * Docker has no way to change an existing container's env vars (e.g. Minecraft's JVM heap comes
+ * from a MEMORY env var baked in at creation), so the only correct way to change memory after the
+ * fact is to rebuild the container from the exact same spec with the new value.
+ */
+export async function updateServerMemory(
+  serverId: string,
+  memoryMb: number,
+  extraSettings?: Record<string, string>,
+) {
   const server = await prisma.gameServer.findUnique({
     where: { id: serverId },
     include: { pack: { include: { items: true } }, plugins: true },
@@ -224,9 +240,7 @@ export async function updateServerMemory(serverId: string, memoryMb: number, ext
 
   const gameDef = getGameDefinition(server.game);
   // Mods (from an attached Pack) and plugins (per-server, Paper-only) both ride on the same
-  // MODRINTH_PROJECTS mechanism — itzg's image sorts out mods-vs-plugins itself based on TYPE, and
-  // a server only ever has one or the other populated in practice (Pack is modded-loader-only,
-  // ServerPlugin is Paper-only), so concatenating is always safe, never actually mixes the two.
+  // MODRINTH_PROJECTS mechanism.
   const modrinthMods = [
     ...(server.pack ? modrinthOnly(server.pack.items) : []),
     ...server.plugins.map((p) => ({ projectId: p.projectId, versionId: p.versionId })),
@@ -241,19 +255,14 @@ export async function updateServerMemory(serverId: string, memoryMb: number, ext
     version: server.version,
     rconPassword: server.rconPassword ?? '',
     modrinthMods,
-    workshopCollectionId: server.workshopCollectionId ?? undefined,
     workshopItemIds: server.workshopItemIds ? JSON.parse(server.workshopItemIds) : undefined,
     modIds: server.modIds ? JSON.parse(server.modIds) : undefined,
     motd: server.motd ?? undefined,
-    extraSettings: extraSettings ?? (server.extraSettings ? JSON.parse(server.extraSettings) : undefined),
+    extraSettings:
+      extraSettings ?? (server.extraSettings ? JSON.parse(server.extraSettings) : undefined),
   });
 
-  // 'game' and 'rcon' host ports are already durably recorded on the server row itself — reading
-  // them from there instead of live docker inspect means a resize still works even if the
-  // container isn't currently inspectable (crashed, or just exited — Docker drops a bridge-network
-  // container's NetworkSettings.Ports once it's stopped, e.g. after a host/Docker restart). Only
-  // 'extra' ports (7 Days to Die, Project Zomboid) have no persisted field to fall back to, so
-  // those still need the container to actually be up.
+  // 'game' and 'rcon' host ports are already durably recorded on the server row itself.
   const oldContainer = getContainer(server.containerId);
   const inspect = await oldContainer.inspect().catch(() => null);
   const hostPorts = spec.ports.map((p) => {
@@ -263,7 +272,10 @@ export async function updateServerMemory(serverId: string, memoryMb: number, ext
     const key = `${p.containerPort}/${p.protocol}`;
     const binding = inspect?.NetworkSettings.Ports[key]?.[0];
     if (!binding) {
-      throw new ServerCreationError(`Could not find the current host port for ${key} — try starting the server first`, 500);
+      throw new ServerCreationError(
+        `Could not find the current host port for ${key} — try starting the server first`,
+        500,
+      );
     }
     return Number(binding.HostPort);
   });
@@ -273,25 +285,28 @@ export async function updateServerMemory(serverId: string, memoryMb: number, ext
 
   let newContainerId: string;
   try {
-    const container = await createServerContainer(spec, hostPorts, { 'outpost.serverId': server.id });
+    const container = await createServerContainer(spec, hostPorts, {
+      'outpost.serverId': server.id,
+    });
     newContainerId = container.id;
     await container.start();
   } catch (err) {
-    // The old container is already gone at this point — surface clearly rather than pretending
-    // the server is still fine, so the user knows to retry rather than wonder why it's offline.
+    // The old container is already gone at this point.
     throw new ServerCreationError(
       `Resized but failed to restart the container: ${err instanceof Error ? err.message : String(err)}`,
       502,
     );
   }
 
-  // Same reasoning as createServer(): a recreated TF2 container is back to only cp_badlands on
-  // disk (see tf2.ts), so re-trigger the install + auto-switch back to whatever map it was
-  // actually on, rather than silently leaving the server stuck on badlands after a resize.
+  // Same reasoning as createServer(): a recreated TF2 container is back to only cp_badlands on disk
+  // (see tf2.ts), so re-trigger the install + auto-switch back to whatever map it was on, rather
+  // than silently leaving the server stuck on badlands after a resize.
   if (server.game === 'tf2' && server.variant !== 'cp_badlands') {
     startInstallingMaps(newContainerId, (ok) => {
       if (!ok) return;
-      changeMap(server.game, server.rconPort, server.rconPassword, server.variant).catch(() => undefined);
+      changeMap(server.game, server.rconPort, server.rconPassword, server.variant).catch(
+        () => undefined,
+      );
     }).catch(() => undefined);
   }
 

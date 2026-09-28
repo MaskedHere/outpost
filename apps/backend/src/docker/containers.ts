@@ -7,7 +7,7 @@ import type { CreateContainerSpec } from '../games/types.js';
 
 export const MANAGED_LABEL = 'outpost.managed';
 
-/** Pulls `image` if it isn't present locally yet. Streams progress to stdout for server logs. */
+/** Pulls `image` if it isn't present locally yet. */
 export async function ensureImage(image: string): Promise<void> {
   const images = await docker.listImages({ filters: { reference: [image] } });
   if (images.length > 0) return;
@@ -15,7 +15,9 @@ export async function ensureImage(image: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     docker.pull(image, (err: Error | null, stream: NodeJS.ReadableStream) => {
       if (err) return reject(err);
-      docker.modem.followProgress(stream, (progressErr) => (progressErr ? reject(progressErr) : resolve()));
+      docker.modem.followProgress(stream, (progressErr) =>
+        progressErr ? reject(progressErr) : resolve(),
+      );
     });
   });
 }
@@ -39,20 +41,15 @@ export async function createServerContainer(
   const binds: string[] = [];
   const hostPaths: Record<string, string> = {};
   for (const v of spec.volumes) {
-    // Two different views of the same directory. `localDir` is where *this* process can read and
-    // write it; `toHostPath` converts that to where the Docker daemon will find it on the host,
-    // which is the only form valid as a bind-mount source. In development they're identical; in a
-    // container deploy they are not, and using the local form is what produced
-    // `mkdir /data: read-only file system` on ZimaOS.
+    // Two different views of the same directory.
     const localDir = path.join(spec.dataPath, v.hostSubdir);
     await fs.mkdir(localDir, { recursive: true });
-    // Bind-mounted dirs are created by this (Node) process, but plenty of these game images run
-    // as a non-root in-container user (e.g. a rootless "steam" account) — without this the
-    // container can't write its own save/config files into a dir we just created as ourselves.
+    // Directories are created by this Node process, but many images run as a non-root user (e.g.
+    // "steam"), so ownership is handed over to let the container write its own files.
     await fs.chmod(localDir, 0o777).catch(() => undefined);
     binds.push(`${toHostPath(localDir)}:${v.containerPath}`);
     // preCreate hooks write real files (Factorio's rconpw, 7 Days to Die's serverconfig.xml), so
-    // they get the local form — the host form isn't reachable from in here.
+    // they get the local form.
     hostPaths[v.hostSubdir] = localDir;
   }
 
@@ -92,8 +89,13 @@ export async function stopContainer(containerId: string, timeoutSec = 30): Promi
   try {
     await getContainer(containerId).stop({ t: timeoutSec });
   } catch (err: unknown) {
-    // 304 = already stopped, not an error for our purposes
-    if (!(err && typeof err === 'object' && 'statusCode' in err && (err as { statusCode: number }).statusCode === 304)) {
+    // 304 = already stopped; not an error here.
+    if (!(
+      err &&
+      typeof err === 'object' &&
+      'statusCode' in err &&
+      (err as { statusCode: number }).statusCode === 304
+    )) {
       throw err;
     }
   }
@@ -107,7 +109,12 @@ export async function removeContainer(containerId: string): Promise<void> {
   try {
     await getContainer(containerId).remove({ force: true });
   } catch (err: unknown) {
-    if (!(err && typeof err === 'object' && 'statusCode' in err && (err as { statusCode: number }).statusCode === 404)) {
+    if (!(
+      err &&
+      typeof err === 'object' &&
+      'statusCode' in err &&
+      (err as { statusCode: number }).statusCode === 404
+    )) {
       throw err;
     }
   }
@@ -120,17 +127,11 @@ export interface ServerStatus {
   cpuPercent: number;
   memoryUsedMb: number;
   memoryLimitMb: number;
-  /** Last exit code once stopped — null while still running. Used to tell a crash apart from a
-   *  clean shutdown (see readinessService.ts's 'crashed' state). */
+  /** Last exit code once stopped. */
   exitCode: number | null;
-  /** True if the Linux OOM killer ended the container (ran out of its memory limit) — always a
-   *  crash regardless of the exit code it happened to leave behind. */
+  /** True if the Linux OOM killer ended the container (ran out of its memory limit) */
   oomKilled: boolean;
-  /** How many times Docker has restarted this container under its `unless-stopped` policy. The
-   *  key signal for catching a crash *loop*: the container keeps coming back up, so polling almost
-   *  never catches it in an exited state, and every individual sample looks like a fresh boot. A
-   *  nonzero count on a server that isn't ready means it's been dying and restarting, not booting.
-   *  See readinessService.ts. */
+  /** How many times Docker has restarted this container under its `unless-stopped` policy. */
   restartCount: number;
 }
 
@@ -157,17 +158,9 @@ export async function getContainerStatus(containerId: string): Promise<ServerSta
   const stats = await container.stats({ stream: false });
   const cpuDelta = stats.cpu_stats.cpu_usage.total_usage - stats.precpu_stats.cpu_usage.total_usage;
   const systemDelta = stats.cpu_stats.system_cpu_usage - stats.precpu_stats.system_cpu_usage;
-  // Share of the whole machine, 0-100 -- deliberately NOT docker stats' convention.
-  //
-  // `docker stats` multiplies this by the core count, so a container using four cores flat out
-  // reads "400%". That is meaningful to someone who knows the convention and baffling to everyone
-  // else, which is most people opening a server panel. systemDelta already spans every core, so
-  // cpuDelta/systemDelta is the fraction of total capacity; leaving the multiply off keeps the
-  // number in the range the label "%" implies. Clamped because sampling jitter between the two
-  // snapshots can otherwise nudge it a hair over.
-  const cpuPercent = systemDelta > 0 && cpuDelta > 0
-    ? Math.min(100, (cpuDelta / systemDelta) * 100)
-    : 0;
+  // Share of the whole machine, 0-100 -- NOT docker stats' convention.
+  const cpuPercent =
+    systemDelta > 0 && cpuDelta > 0 ? Math.min(100, (cpuDelta / systemDelta) * 100) : 0;
 
   return {
     state,

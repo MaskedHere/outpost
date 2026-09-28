@@ -1,10 +1,10 @@
 import net from 'node:net';
 
 /**
- * Minimal client for Valve's Source RCON protocol (https://developer.valvesoftware.com/wiki/Source_RCON_Protocol).
+ * Minimal client for Valve's Source RCON protocol
+ * (https://developer.valvesoftware.com/wiki/Source_RCON_Protocol).
  * Minecraft's RCON is a direct copy of this same wire format, and Factorio/Project Zomboid/most
- * Source-engine dedicated servers all speak it too — one client covers every RCON-capable game
- * Outpost supports, connecting straight over the network rather than shelling into the container.
+ * Source-engine dedicated servers all speak it too.
  */
 
 const TYPE_AUTH = 3;
@@ -32,7 +32,10 @@ interface DecodedPacket {
 }
 
 /** Pulls complete packets off a growing receive buffer, returning leftover unread bytes. */
-function decodePackets(buf: Buffer<ArrayBufferLike>): { packets: DecodedPacket[]; rest: Buffer<ArrayBufferLike> } {
+function decodePackets(buf: Buffer<ArrayBufferLike>): {
+  packets: DecodedPacket[];
+  rest: Buffer<ArrayBufferLike>;
+} {
   const packets: DecodedPacket[] = [];
   let offset = 0;
   while (offset + 4 <= buf.length) {
@@ -49,10 +52,14 @@ function decodePackets(buf: Buffer<ArrayBufferLike>): { packets: DecodedPacket[]
 
 export class RconAuthError extends Error {}
 
-/** Connects, authenticates, runs one command, and disconnects — matches the console's
- *  one-line-in/one-response-out usage pattern, and avoids having to manage a long-lived
- *  authenticated connection (with its own reconnect/expiry handling) per open console tab. */
-export function rconExec(host: string, port: number, password: string, command: string, timeoutMs = 8000): Promise<string> {
+/** Connects, authenticates, runs one command, and disconnects. */
+export function rconExec(
+  host: string,
+  port: number,
+  password: string,
+  command: string,
+  timeoutMs = 8000,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host, port });
     let recvBuf: Buffer<ArrayBufferLike> = Buffer.alloc(0);
@@ -81,8 +88,7 @@ export function rconExec(host: string, port: number, password: string, command: 
 
       for (const pkt of packets) {
         if (!authed) {
-          // Some servers send an empty SERVERDATA_RESPONSE_VALUE before the real auth response —
-          // ignore anything that isn't the auth response itself.
+          // Some servers send an empty SERVERDATA_RESPONSE_VALUE before the real auth response.
           if (pkt.type !== TYPE_AUTH_RESPONSE) continue;
           if (pkt.id === -1) {
             cleanup();
@@ -108,12 +114,8 @@ export function rconExec(host: string, port: number, password: string, command: 
     });
 
     socket.on('close', () => {
-      // If we get here having already resolved/rejected (the normal paths above always destroy
-      // the socket themselves, triggering this), this is a no-op — Promises silently ignore a
-      // second settle. But if the *remote end* closed the connection first — e.g. a Source engine
-      // server dropping banned/flagged IPs outright instead of just staying silent — nothing else
-      // was ever going to settle this promise, and clearing the timer here without rejecting used
-      // to leave it pending forever.
+      // No-op if already settled. If the remote end closed first (e.g. a server dropping a banned
+      // IP), this is the only place the promise gets settled.
       clearTimeout(timer);
       reject(new Error('RCON connection closed before completing'));
     });

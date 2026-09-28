@@ -1,6 +1,13 @@
 import AdmZip from 'adm-zip';
 import crypto from 'node:crypto';
-import { getProject, getVersion, lookupVersionsBySha1, searchMods, type ModrinthVersion, type ModrinthSupportLevel } from './client.js';
+import {
+  getProject,
+  getVersion,
+  lookupVersionsBySha1,
+  searchMods,
+  type ModrinthVersion,
+  type ModrinthSupportLevel,
+} from './client.js';
 import { resolveModFileDownloadUrl } from '../curseforge/scraper.js';
 
 const CURSEFORGE_UA =
@@ -11,6 +18,8 @@ export interface ImportedItem {
   projectId: string | null;
   projectSlug: string | null;
   projectName: string;
+  /** Mod artwork, when the source this item came from published one. */
+  iconUrl?: string | null;
   versionId: string | null;
   versionNumber: string | null;
   filename: string;
@@ -18,15 +27,16 @@ export interface ImportedItem {
   sha1: string;
   sha512: string | null;
   fileSizeBytes: number;
-  /** Set whenever the actual jar bytes were already in hand at import time (an embedded jar in a
-   *  CurseForge instance/server-pack zip, or an entry in a raw jars zip) — including for a
-   *  source: 'modrinth' item, where the hash happened to also match a Modrinth project. Modrinth is
-   *  only borrowed for identification (a real name/version instead of a raw filename) in that case;
-   *  the route handler persists this buffer to disk and the server deploys from it directly rather
-   *  than re-fetching the same file from Modrinth's CDN. Never sent on to the frontend as JSON. */
+  /**
+   * Jar bytes captured at import time (embedded in a CurseForge zip or a raw jars zip), including
+   * for Modrinth hash matches. The route handler writes this to disk so the item deploys from the
+   * original file.
+   */
   fileBuffer?: Buffer;
-  /** True when this item was pulled in automatically to satisfy another mod's required-dependency
-   *  chain rather than picked directly — see resolveDependencyItems. */
+  /**
+   * True when this item was pulled in automatically to satisfy another mod's required-dependency
+   * chain rather than picked directly.
+   */
   isDependency?: boolean;
 }
 
@@ -42,14 +52,13 @@ export interface ImportResult {
   loader: string | null;
   matched: ImportedItem[];
   unresolved: UnresolvedEntry[];
-  // Mods Modrinth itself marks server_side: "unsupported" (client-only rendering/cosmetic mods —
-  // shaders, tooltips, video players, etc.) — left out of `matched` entirely rather than installed
-  // and left to crash a dedicated server the way a real DREAD pack import once did (see minecraft.ts
-  // and the itzg image's own imperfect client-mod auto-skip, which several of these slip past).
+  // Mods Modrinth itself marks server_side: "unsupported" (client-only rendering/cosmetic mods -
+  // shaders, tooltips, video players, etc.) - left out of `matched` entirely rather than installed
+  // and left to crash a dedicated server the way a real DREAD pack import once did (see
+  // minecraft.ts and the itzg image's own imperfect client-mod auto-skip, which several of these
+  // slip past).
   clientOnly: UnresolvedEntry[];
-  // Non-mod files from a CurseForge pack's overrides/ folder (configs, resourcepacks, scripts) —
-  // only ever populated for format 'curseforge'. Not sent to the frontend as JSON; the route
-  // handler writes these to disk the same way it does ImportedItem.fileBuffer.
+  // Non-mod files from a CurseForge pack's overrides/ folder (configs, resourcepacks, scripts)
   overrideFiles?: { path: string; buffer: Buffer }[];
 }
 
@@ -57,11 +66,17 @@ export class ImportError extends Error {}
 
 export type ImportProgress = (current: number, total: number) => void;
 
-/** Runs `fn` over `items` with at most `limit` in flight at once instead of one giant Promise.all
- *  (which would slam Modrinth's API with hundreds of simultaneous requests) or a plain sequential
- *  loop (which is what made a 500-mod CurseForge pack take minutes — each mod waited on the
- *  previous one's two full round trips before starting its own). */
-async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+/**
+ * Runs `fn` over `items` with at most `limit` in flight at once instead of one giant Promise.all
+ * (which would slam Modrinth's API with hundreds of simultaneous requests) or a plain sequential
+ * loop (which is what made a 500-mod CurseForge pack take minutes - each mod waited on the previous
+ * one's two full round trips before starting its own).
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let next = 0;
   async function worker() {
@@ -109,20 +124,21 @@ async function projectMeta(projectId: string, fallbackName: string): Promise<Pro
     const project = await getProject(projectId);
     return { slug: project.slug, title: project.title, serverSide: project.server_side };
   } catch {
-    // Unknown — assume it's fine rather than silently dropping a mod we can't classify.
+    // Unknown: keep the mod rather than silently dropping it.
     return { slug: projectId, title: fallbackName, serverSide: 'required' };
   }
 }
 
-/** True for mods Modrinth itself marks as not running on a dedicated server — shaders, tooltips,
- *  video players, and similar client-only cosmetics. This is the same signal Modrinth's own site
- *  uses for its client/server badges, curated independently of whatever (often missing or wrong)
- *  side declaration the mod's own jar carries — see the ImportResult.clientOnly doc comment. */
+/** True for mods Modrinth itself marks as not running on a dedicated server. */
 function isServerUnsupported(serverSide: ModrinthSupportLevel): boolean {
   return serverSide === 'unsupported';
 }
 
-function toItem(version: ModrinthVersion, file: ModrinthVersion['files'][number], meta: { slug: string; title: string }): ImportedItem {
+function toItem(
+  version: ModrinthVersion,
+  file: ModrinthVersion['files'][number],
+  meta: { slug: string; title: string },
+): ImportedItem {
   return {
     source: 'modrinth',
     projectId: version.project_id,
@@ -138,12 +154,7 @@ function toItem(version: ModrinthVersion, file: ModrinthVersion['files'][number]
   };
 }
 
-/** Best-effort mod name from a jar's filename — strips the extension and everything from the first
- *  version-number-or-loader-name segment onward, then splits any camelCase/PascalCase run into
- *  separate words (CurseForge filenames often glue a display name together with no separator at
- *  all — "LegendaryTooltips-1.19.2-forge-1.4.0.jar" needs to become "Legendary Tooltips" before
- *  Modrinth's search will find it; searching the glued form returns zero hits, confirmed directly
- *  against their API). "entity_model_features_forge_1.19.2-2.0.2.jar" -> "entity model features". */
+/** Best-effort mod name from a jar's filename. */
 function guessModName(filename: string): string {
   const base = filename.replace(/\.jar$/i, '');
   const parts = base.split(/[-_]+/);
@@ -156,15 +167,10 @@ function guessModName(filename: string): string {
   return raw.replace(/([a-z0-9])([A-Z])/g, '$1 $2').trim();
 }
 
-/** Safety net for a jar Modrinth doesn't recognize by hash (so isServerUnsupported never got a
- *  chance to run on it at all) — e.g. a build never uploaded to Modrinth under this exact hash, the
- *  actual cause of a real crash loop this caught: CurseForge's LegendaryTooltips-1.19.2-forge-1.4.0
- *  didn't hash-match Modrinth's build, installed with zero side information, and crashed a
- *  dedicated server the same way Oculus/WaterMedia did before hash-matching started catching those.
- *  Falls back to a name search — only trusted when the title matches closely enough to be confident
- *  it's the same mod, not just topically similar. Returns false (assume installable) on any
- *  uncertainty; missing a client-only mod here is the pre-existing gap, not a new risk, but wrongly
- *  excluding an installable mod would silently break the pack instead. */
+/**
+ * Safety net for a jar Modrinth doesn't recognize by hash (so isServerUnsupported never got a
+ * chance to run on it at all)
+ */
 async function isLikelyClientOnlyByName(filename: string): Promise<boolean> {
   const guess = guessModName(filename);
   if (!guess) return false;
@@ -178,9 +184,10 @@ async function isLikelyClientOnlyByName(filename: string): Promise<boolean> {
   }
 }
 
-/** Used when a mod jar's actual bytes are in hand (an embedded jar in a CurseForge instance zip,
- *  or an entry in a raw jars zip) but Modrinth doesn't recognize it by hash — rather than dropping
- *  the mod, keep the file itself so the pack still deploys with everything intact. */
+/**
+ * For jars Modrinth doesn't recognize by hash: keep the file itself so the pack still deploys
+ * intact.
+ */
 function toLocalItem(filename: string, buffer: Buffer, sha1: string): ImportedItem {
   return {
     source: 'local',
@@ -198,7 +205,7 @@ function toLocalItem(filename: string, buffer: Buffer, sha1: string): ImportedIt
   };
 }
 
-// cdn.modrinth.com/data/<projectId>/versions/<versionId>/<filename> — the URL shape Outpost's own
+// cdn.modrinth.com/data/<projectId>/versions/<versionId>/<filename> - the URL shape Outpost's own
 // exporter (and Modrinth's own client) produces, so most mrpacks carry it directly.
 const MODRINTH_CDN_RE = /^https:\/\/cdn\.modrinth\.com\/data\/([^/]+)\/versions\/([^/]+)\//;
 
@@ -224,8 +231,7 @@ export async function importMrpack(zip: AdmZip): Promise<ImportResult> {
   const loaderEntry = Object.entries(LOADER_DEPENDENCY_KEY).find(([, key]) => key in deps);
   const loader = loaderEntry?.[0] ?? null;
 
-  // Only mod jars become pack items — resourcepacks/shaderpacks/config overrides aren't part of
-  // Outpost's Pack model, which targets the mod-loader deploy flow specifically.
+  // Only mod jars become pack items.
   const modFiles = index.files.filter((f) => f.path.startsWith('mods/'));
 
   const matched: ImportedItem[] = [];
@@ -235,8 +241,7 @@ export async function importMrpack(zip: AdmZip): Promise<ImportResult> {
 
   for (const file of modFiles) {
     const label = file.path.split('/').pop() ?? file.path;
-    // The mrpack format itself already records per-file client/server support (env.server) — no
-    // need to consult Modrinth separately for files that declare it themselves.
+    // The mrpack format itself already records per-file client/server support (env.server)
     if (file.env?.server === 'unsupported') {
       clientOnly.push({ label, reason: "Client-only mod — doesn't run on a dedicated server" });
       continue;
@@ -246,11 +251,15 @@ export async function importMrpack(zip: AdmZip): Promise<ImportResult> {
     if (versionId) {
       try {
         const version = await getVersion(versionId);
-        const primary = version.files.find((f) => f.hashes.sha1 === file.hashes.sha1) ?? version.files[0];
+        const primary =
+          version.files.find((f) => f.hashes.sha1 === file.hashes.sha1) ?? version.files[0];
         if (primary) {
           const meta = await projectMeta(version.project_id, label);
           if (isServerUnsupported(meta.serverSide)) {
-            clientOnly.push({ label: meta.title, reason: "Client-only mod — doesn't run on a dedicated server" });
+            clientOnly.push({
+              label: meta.title,
+              reason: "Client-only mod — doesn't run on a dedicated server",
+            });
           } else {
             matched.push(toItem(version, primary, meta));
           }
@@ -279,14 +288,25 @@ export async function importMrpack(zip: AdmZip): Promise<ImportResult> {
       }
       const meta = await projectMeta(version.project_id, label);
       if (isServerUnsupported(meta.serverSide)) {
-        clientOnly.push({ label: meta.title, reason: "Client-only mod — doesn't run on a dedicated server" });
+        clientOnly.push({
+          label: meta.title,
+          reason: "Client-only mod — doesn't run on a dedicated server",
+        });
         continue;
       }
       matched.push(toItem(version, primary, meta));
     }
   }
 
-  return { format: 'mrpack', suggestedName: index.name ?? null, mcVersion, loader, matched, unresolved, clientOnly };
+  return {
+    format: 'mrpack',
+    suggestedName: index.name ?? null,
+    mcVersion,
+    loader,
+    matched,
+    unresolved,
+    clientOnly,
+  };
 }
 
 interface CurseForgeManifest {
@@ -295,17 +315,18 @@ interface CurseForgeManifest {
   files?: { projectID: number; fileID: number; required?: boolean }[];
 }
 
-/** Hashes each jar, batch-checks the lot against Modrinth in one call, and classifies each as a
- *  Modrinth-identified match (bytes kept and deployed locally regardless — see
- *  ImportedItem.fileBuffer), a client-only mod (excluded), or a local item Modrinth doesn't
- *  recognize (bytes kept as-is). Shared by every import path that ends up with actual jar bytes in
- *  hand: a CurseForge instance zip's embedded mods/, each mod in a "share" export resolved
- *  individually via CurseForge's own pages, and a raw jars zip. */
+/**
+ * Hashes each jar, checks them against Modrinth in one batch call, and classifies each as a
+ * Modrinth match, a client-only mod (excluded), or an unrecognized local item. Shared by every
+ * import path that has jar bytes in hand.
+ */
 export async function classifyJarsByHash(
   jars: { filename: string; buffer: Buffer }[],
   matched: ImportedItem[],
   clientOnly: UnresolvedEntry[],
   onProgress?: ImportProgress,
+  /** Whether a jar may be excluded for being client-only. */
+  dropClientOnly = true,
 ): Promise<void> {
   if (jars.length === 0) return;
   const byHash = new Map<string, { filename: string; buffer: Buffer }>();
@@ -320,61 +341,70 @@ export async function classifyJarsByHash(
     const primary = version?.files.find((f) => f.hashes.sha1 === sha1) ?? version?.files[0];
     if (version && primary) {
       const meta = await projectMeta(version.project_id, jar.filename);
-      if (isServerUnsupported(meta.serverSide)) {
-        clientOnly.push({ label: meta.title, reason: "Client-only mod — doesn't run on a dedicated server" });
+      if (dropClientOnly && isServerUnsupported(meta.serverSide)) {
+        clientOnly.push({
+          label: meta.title,
+          reason: "Client-only mod — doesn't run on a dedicated server",
+        });
       } else {
-        // The hash match confirms this is byte-for-byte the same file Modrinth has — borrow its
-        // name/version for display, but keep the bytes already in hand rather than have the server
-        // re-download this exact file from Modrinth's CDN at deploy time.
+        // The hash match confirms this is byte-for-byte the same file Modrinth has.
         matched.push({ ...toItem(version, primary, meta), fileBuffer: jar.buffer });
       }
-    } else if (await isLikelyClientOnlyByName(jar.filename)) {
-      // No hash match, so the usual server_side check never got a chance to run — but a confident
-      // name match against a different build of the same mod is still enough signal to catch it
-      // (see isLikelyClientOnlyByName's doc comment for the real crash this closes).
-      clientOnly.push({ label: guessModName(jar.filename), reason: "Client-only mod — doesn't run on a dedicated server" });
+    } else if (dropClientOnly && (await isLikelyClientOnlyByName(jar.filename))) {
+      // No hash match, so the usual server_side check never got a chance to run.
+      clientOnly.push({
+        label: guessModName(jar.filename),
+        reason: "Client-only mod — doesn't run on a dedicated server",
+      });
     } else {
-      // Not on Modrinth at all (by hash or by name), so there's genuinely no side information
-      // available — keep the jar itself rather than guess wrong and drop a mod that was fine.
+      // Not on Modrinth at all (by hash or by name), so there's no side information available.
       matched.push(toLocalItem(jar.filename, jar.buffer, sha1));
     }
     onProgress?.(++completed, total);
   });
 }
 
-export async function importCurseForge(zip: AdmZip, onProgress?: ImportProgress): Promise<ImportResult> {
+export async function importCurseForge(
+  zip: AdmZip,
+  onProgress?: ImportProgress,
+): Promise<ImportResult> {
   const manifestEntry = zip.getEntry('manifest.json');
   if (!manifestEntry) throw new ImportError('manifest.json missing from CurseForge pack');
   const manifest = JSON.parse(manifestEntry.getData().toString('utf8')) as CurseForgeManifest;
 
   const mcVersion = manifest.minecraft?.version ?? null;
-  const primaryLoader = manifest.minecraft?.modLoaders?.find((l) => l.primary) ?? manifest.minecraft?.modLoaders?.[0];
-  // CF loader ids look like "forge-47.2.0" / "fabric-0.15.11" — we only need the loader name.
+  const primaryLoader =
+    manifest.minecraft?.modLoaders?.find((l) => l.primary) ?? manifest.minecraft?.modLoaders?.[0];
+  // CF loader ids look like "forge-47.2.0" / "fabric-0.15.11".
   const loader = primaryLoader?.id.split('-')[0] ?? null;
 
   const unresolved: UnresolvedEntry[] = [];
   const clientOnly: UnresolvedEntry[] = [];
   const matched: ImportedItem[] = [];
 
-  // Everything under overrides/ except mods/ (which is handled above/below as actual pack items) —
-  // configs, resourcepacks, scripts, whatever the pack author shipped as-is. Previously discarded
-  // entirely, which is why a mod like a server-side anticheat installed with none of its intended
-  // configuration and defaulted to rejecting every player. Extracted once here since both branches
-  // below (embedded jars or manifest-resolved) can carry one.
+  // Everything under overrides/ except mods/ (which is handled above/below as actual pack items)
   const overrideFiles = zip
     .getEntries()
-    .filter((e) => !e.isDirectory && /^overrides\//i.test(e.entryName.replace(/\\/g, '/')) && !/^overrides\/mods\//i.test(e.entryName.replace(/\\/g, '/')))
-    .map((e) => ({ path: e.entryName.replace(/\\/g, '/').replace(/^overrides\//i, ''), buffer: e.getData() }));
+    .filter(
+      (e) =>
+        !e.isDirectory &&
+        /^overrides\//i.test(e.entryName.replace(/\\/g, '/')) &&
+        !/^overrides\/mods\//i.test(e.entryName.replace(/\\/g, '/')),
+    )
+    .map((e) => ({
+      path: e.entryName.replace(/\\/g, '/').replace(/^overrides\//i, ''),
+      buffer: e.getData(),
+    }));
 
-  // A full local CurseForge App instance (as opposed to the lightweight "share" export CurseForge's
-  // own Export button produces) has the actual mod jars sitting right in the zip under mods/ (some
-  // exports nest it under overrides/mods/ instead) — when that's the case, use those files
-  // directly instead of guessing from names: hash each one against Modrinth for an exact match,
-  // and for anything Modrinth doesn't recognize, keep the jar itself as a locally-stored pack item
-  // so the pack still deploys with every mod intact, not just the ones Outpost could identify.
+  // A full CurseForge App instance ships the mod jars in the zip (under mods/ or overrides/mods/).
+  // Use those files directly: hash-match them against Modrinth and keep anything unrecognized as a
+  // local item.
   const embeddedJars = zip
     .getEntries()
-    .filter((e) => !e.isDirectory && /^(overrides\/)?mods\/[^/]+\.jar$/i.test(e.entryName.replace(/\\/g, '/')));
+    .filter(
+      (e) =>
+        !e.isDirectory && /^(overrides\/)?mods\/[^/]+\.jar$/i.test(e.entryName.replace(/\\/g, '/')),
+    );
 
   if (embeddedJars.length > 0) {
     const jars = embeddedJars.map((entry) => ({
@@ -382,24 +412,36 @@ export async function importCurseForge(zip: AdmZip, onProgress?: ImportProgress)
       buffer: entry.getData(),
     }));
     await classifyJarsByHash(jars, matched, clientOnly, onProgress);
-    return { format: 'curseforge', suggestedName: manifest.name ?? null, mcVersion, loader, matched, unresolved, clientOnly, overrideFiles };
+    return {
+      format: 'curseforge',
+      suggestedName: manifest.name ?? null,
+      mcVersion,
+      loader,
+      matched,
+      unresolved,
+      clientOnly,
+      overrideFiles,
+    };
   }
 
-  // No embedded jars — this is the lightweight "share" export, whose manifest.json only carries
-  // opaque numeric {projectID, fileID} pairs. Those don't need CurseForge's key-gated API to
-  // resolve, though: curseforge.com/projects/<projectID> redirects to the mod's real slugged page
-  // with no key at all, and from there the same page CurseForge's own download button links to
-  // gives the real signed file URL — exactly what the official CurseForge app itself does when it
-  // resolves a "share" import locally. So every mod in the manifest gets its own real file
-  // downloaded directly from CurseForge (resolved in parallel below), then classified against
-  // Modrinth by hash exactly like an embedded jar would be — no name-guessing anywhere.
+  // No embedded jars - this is the lightweight "share" export, whose manifest.json only carries
+  // opaque numeric {projectID, fileID} pairs.
   const manifestFiles = manifest.files ?? [];
   if (manifestFiles.length === 0) {
     unresolved.push({
       label: 'mod list',
       reason: "This pack's manifest.json listed no mods — add them manually below.",
     });
-    return { format: 'curseforge', suggestedName: manifest.name ?? null, mcVersion, loader, matched, unresolved, clientOnly, overrideFiles };
+    return {
+      format: 'curseforge',
+      suggestedName: manifest.name ?? null,
+      mcVersion,
+      loader,
+      matched,
+      unresolved,
+      clientOnly,
+      overrideFiles,
+    };
   }
 
   const jars: { filename: string; buffer: Buffer }[] = [];
@@ -408,20 +450,30 @@ export async function importCurseForge(zip: AdmZip, onProgress?: ImportProgress)
     try {
       const mod = await resolveModFileDownloadUrl(file.projectID, file.fileID);
       if (!mod) {
-        unresolved.push({ label: `CurseForge project #${file.projectID}`, reason: 'This mod no longer exists on CurseForge' });
+        unresolved.push({
+          label: `CurseForge project #${file.projectID}`,
+          reason: 'This mod no longer exists on CurseForge',
+        });
         return;
       }
       if (!mod.downloadUrl) {
-        unresolved.push({ label: mod.projectName, reason: "Found the mod on CurseForge, but this specific file is gone" });
+        unresolved.push({
+          label: mod.projectName,
+          reason: 'Found the mod on CurseForge, but this specific file is gone',
+        });
         return;
       }
       const fileRes = await fetch(mod.downloadUrl, { headers: { 'User-Agent': CURSEFORGE_UA } });
       if (!fileRes.ok) {
-        unresolved.push({ label: mod.projectName, reason: 'Found on CurseForge, but downloading the file failed' });
+        unresolved.push({
+          label: mod.projectName,
+          reason: 'Found on CurseForge, but downloading the file failed',
+        });
         return;
       }
       const buffer = Buffer.from(await fileRes.arrayBuffer());
-      const filename = new URL(mod.downloadUrl).pathname.split('/').pop() || `${mod.projectSlug}.jar`;
+      const filename =
+        new URL(mod.downloadUrl).pathname.split('/').pop() || `${mod.projectSlug}.jar`;
       jars.push({ filename, buffer });
     } catch {
       unresolved.push({ label: `CurseForge project #${file.projectID}`, reason: 'Lookup failed' });
@@ -431,39 +483,66 @@ export async function importCurseForge(zip: AdmZip, onProgress?: ImportProgress)
   });
 
   await classifyJarsByHash(jars, matched, clientOnly);
-  return { format: 'curseforge', suggestedName: manifest.name ?? null, mcVersion, loader, matched, unresolved, clientOnly };
+  return {
+    format: 'curseforge',
+    suggestedName: manifest.name ?? null,
+    mcVersion,
+    loader,
+    matched,
+    unresolved,
+    clientOnly,
+  };
 }
 
 /** Minecraft version numbers as they appear in paths: "1.21.1", "1.20", and the newer prefix-less
  *  scheme like "26.1.2". */
 const MC_VERSION = String.raw`(\d+\.\d+(?:\.\d+)?)`;
 
-/** Path shapes that identify the loader, and where present the Minecraft version alongside it. A
- *  loader lays its own artifacts down in predictable places, so these are read off the real files
- *  rather than inferred. */
+/** Path shapes that identify the loader, and where present the Minecraft version alongside it. */
 const LOADER_SIGNATURES: { re: RegExp; loader: string; capturesVersion: boolean }[] = [
   // libraries/net/neoforged/neoforge/1.21.1-21.1.77/...
-  { re: new RegExp(String.raw`libraries/net/neoforged/neoforge/${MC_VERSION}-`, 'i'), loader: 'neoforge', capturesVersion: true },
+  {
+    re: new RegExp(String.raw`libraries/net/neoforged/neoforge/${MC_VERSION}-`, 'i'),
+    loader: 'neoforge',
+    capturesVersion: true,
+  },
   // libraries/net/minecraftforge/forge/1.20.1-47.2.0/...
-  { re: new RegExp(String.raw`libraries/net/minecraftforge/forge/${MC_VERSION}-`, 'i'), loader: 'forge', capturesVersion: true },
+  {
+    re: new RegExp(String.raw`libraries/net/minecraftforge/forge/${MC_VERSION}-`, 'i'),
+    loader: 'forge',
+    capturesVersion: true,
+  },
   // Forge names its installer <mcVersion>-<forgeVersion>, so the Minecraft version is right there.
-  { re: new RegExp(String.raw`(?:^|/)forge-${MC_VERSION}-`, 'i'), loader: 'forge', capturesVersion: true },
-  // NeoForge does NOT: "neoforge-21.1.249-installer.jar" is purely a NeoForge version. Matched here
-  // for the loader only — deriveMinecraftFromNeoForge works out the Minecraft version separately.
+  {
+    re: new RegExp(String.raw`(?:^|/)forge-${MC_VERSION}-`, 'i'),
+    loader: 'forge',
+    capturesVersion: true,
+  },
+  // NeoForge does NOT: "neoforge-21.1.249-installer.jar" is purely a NeoForge version.
   { re: /(?:^|\/)neoforge-\d+\.\d+\.\d+.*\.jar/i, loader: 'neoforge', capturesVersion: false },
   // Fabric's server launcher embeds the version it targets:
   // fabric-server-mc.1.21.1-loader.0.16.9-launcher.1.0.1.jar
-  { re: new RegExp(String.raw`fabric-server-mc\.${MC_VERSION}-`, 'i'), loader: 'fabric', capturesVersion: true },
+  {
+    re: new RegExp(String.raw`fabric-server-mc\.${MC_VERSION}-`, 'i'),
+    loader: 'fabric',
+    capturesVersion: true,
+  },
   // Loader present but the version lives elsewhere in the zip.
   { re: /libraries\/net\/neoforged\//i, loader: 'neoforge', capturesVersion: false },
   { re: /libraries\/net\/minecraftforge\//i, loader: 'forge', capturesVersion: false },
   { re: /(?:^|\/)fabric-server-launch\.jar/i, loader: 'fabric', capturesVersion: false },
   { re: /libraries\/net\/fabricmc\//i, loader: 'fabric', capturesVersion: false },
-  { re: /(?:^|\/)quilt-server-launch\.jar|libraries\/org\/quiltmc\//i, loader: 'quilt', capturesVersion: false },
+  {
+    re: /(?:^|\/)quilt-server-launch\.jar|libraries\/org\/quiltmc\//i,
+    loader: 'quilt',
+    capturesVersion: false,
+  },
 ];
 
-/** Where the vanilla server jar itself records the Minecraft version, for packs whose loader
- *  signature didn't carry one (Fabric and Quilt installs, mostly). */
+/**
+ * Where the vanilla server jar records the Minecraft version, for packs whose loader signature
+ * doesn't include it (mostly Fabric and Quilt).
+ */
 const MC_VERSION_SIGNATURES: RegExp[] = [
   new RegExp(String.raw`libraries/net/minecraft/server/${MC_VERSION}[-/]`, 'i'),
   new RegExp(String.raw`(?:^|/)minecraft_server\.${MC_VERSION}\.jar`, 'i'),
@@ -472,10 +551,7 @@ const MC_VERSION_SIGNATURES: RegExp[] = [
 
 /**
  * NeoForge's version encodes the Minecraft version it targets: 21.1.249 is for Minecraft 1.21.1,
- * 20.4.x for 1.20.4, and a trailing .0 minor means the base release (21.0.x -> 1.21). That mapping
- * is the whole point of their scheme, and it's the only Minecraft-version evidence a NeoForge server
- * pack contains — All the Mods 10 ships exactly one identifying file, "neoforge-21.1.249-installer.jar",
- * with no libraries tree and no vanilla jar (verified against the real 1.1GB download).
+ * 20.4.x for 1.20.4, and a trailing .0 minor means the base release (21.0.x -> 1.21).
  */
 function deriveMinecraftFromNeoForge(names: string[]): string | null {
   for (const name of names) {
@@ -484,22 +560,14 @@ function deriveMinecraftFromNeoForge(names: string[]): string | null {
     const major = Number(match[1]);
     const minor = Number(match[2]);
     // Guard the assumption rather than extrapolating it: this holds for the 1.x era NeoForge was
-    // built around. If Minecraft's own numbering moves on, better to report nothing than a
-    // confidently wrong version.
+    // built around.
     if (major < 20 || major > 25) return null;
     return minor === 0 ? `1.${major}` : `1.${major}.${minor}`;
   }
   return null;
 }
 
-/**
- * Last resort: the Minecraft version a pack's mod filenames agree on.
- *
- * Mod jars are conventionally named like "ftb-chunks-forge-1.21.1-2101.1.10.jar" — carrying both the
- * Minecraft version and the mod's own. Individually that's ambiguous, but across hundreds of mods
- * only the Minecraft version repeats, so the most frequent token wins by a wide margin. Requires a
- * few independent agreements before it's trusted, so a handful of coincidences can't decide it.
- */
+/** Last resort: the Minecraft version a pack's mod filenames agree on. */
 function inferMinecraftFromModNames(names: string[]): string | null {
   const counts = new Map<string, number>();
   for (const name of names) {
@@ -516,18 +584,11 @@ function inferMinecraftFromModNames(names: string[]): string | null {
   return best && best[1] >= 5 ? best[0] : null;
 }
 
-/**
- * Reads the Minecraft version and mod loader out of a server pack's own file layout.
- *
- * CurseForge "Server Pack" downloads — which Outpost deliberately prefers, since they ship real mod
- * jars instead of a numeric-ID manifest — carry no manifest.json at all. They're a ready-to-run
- * server directory, so they land in the plain-jars import path, which used to report no version or
- * loader whatsoever. Everything downstream then fell back to whatever the wizard happened to be
- * preset to, which is how All the Mods 10 (1.21.1/NeoForge) got created as a Fabric server on the
- * newest Minecraft release. The loader's own artifacts are right there in the zip, so this reads
- * them rather than guessing.
- */
-export function detectServerPackTarget(zip: AdmZip): { mcVersion: string | null; loader: string | null } {
+/** Reads the Minecraft version and mod loader out of a server pack's own file layout. */
+export function detectServerPackTarget(zip: AdmZip): {
+  mcVersion: string | null;
+  loader: string | null;
+} {
   const names = zip.getEntries().map((e) => e.entryName.replace(/\\/g, '/'));
 
   let loader: string | null = null;
@@ -541,7 +602,7 @@ export function detectServerPackTarget(zip: AdmZip): { mcVersion: string | null;
       if (signature.capturesVersion && match[1]) mcVersion ??= match[1];
       break;
     }
-    // A version-bearing match is the best evidence available; stop once we have both.
+    // A version-bearing match is the best evidence available; stop once both are known.
     if (loader && mcVersion) break;
   }
 
@@ -566,24 +627,69 @@ export function detectServerPackTarget(zip: AdmZip): { mcVersion: string | null;
 }
 
 export async function importJarsZip(zip: AdmZip): Promise<ImportResult> {
-  const jarEntries = zip.getEntries().filter((e) => !e.isDirectory && e.entryName.toLowerCase().endsWith('.jar'));
-  if (jarEntries.length === 0) throw new ImportError('No .jar files found in this zip');
+  const allJars = zip
+    .getEntries()
+    .filter((e) => !e.isDirectory && e.entryName.toLowerCase().endsWith('.jar'));
+  if (allJars.length === 0) throw new ImportError('No .jar files found in this zip');
 
-  const jars = jarEntries.map((entry) => ({ filename: entry.entryName.split('/').pop() ?? entry.entryName, buffer: entry.getData() }));
+  // When the zip has a mods/ directory, that directory *is* the mod list.
+  const modsJars = allJars.filter((e) =>
+    /(^|\/)mods\/[^/]+\.jar$/i.test(e.entryName.replace(/\\/g, '/')),
+  );
+  const jarEntries = modsJars.length > 0 ? modsJars : allJars;
+
+  // Files a server pack ships that belong to the runtime rather than the pack, and which Outpost or
+  // the itzg image owns instead.
+  const RUNTIME_OWNED =
+    /^(server\.properties|eula\.txt|user_jvm_args\.txt|(run|start|startserver|serverstart)\.(sh|bat|cmd))$/i;
+
+  // Everything that isn't a mod jar or a runtime file.
+  const overrideFiles = zip
+    .getEntries()
+    .filter((e) => {
+      if (e.isDirectory) return false;
+      const name = e.entryName.replace(/\\/g, '/');
+      if (/(^|\/)mods\//i.test(name)) return false;
+      if (/^libraries\//i.test(name)) return false;
+      // The loader's own installer sits at the root; it isn't pack content.
+      if (!name.includes('/') && name.toLowerCase().endsWith('.jar')) return false;
+      if (!name.includes('/') && RUNTIME_OWNED.test(name)) return false;
+      return true;
+    })
+    .map((e) => ({ path: e.entryName.replace(/\\/g, '/'), buffer: e.getData() }));
+
+  const jars = jarEntries.map((entry) => ({
+    filename: entry.entryName.split('/').pop() ?? entry.entryName,
+    buffer: entry.getData(),
+  }));
   const matched: ImportedItem[] = [];
   const unresolved: UnresolvedEntry[] = [];
   const clientOnly: UnresolvedEntry[] = [];
-  await classifyJarsByHash(jars, matched, clientOnly);
 
   // A CurseForge server pack arrives here (no manifest.json), and it knows perfectly well what it
-  // targets — see detectServerPackTarget. A genuine bag-of-jars zip has no such markers and still
-  // reports nulls, leaving the caller's values to stand in.
+  // targets.
   const { mcVersion, loader } = detectServerPackTarget(zip);
+  const isServerPack = loader !== null;
 
-  return { format: 'jars', suggestedName: null, mcVersion, loader, matched, unresolved, clientOnly };
+  // Install a server pack exactly as shipped.
+  await classifyJarsByHash(jars, matched, clientOnly, undefined, !isServerPack);
+
+  return {
+    format: 'jars',
+    suggestedName: null,
+    mcVersion,
+    loader,
+    matched,
+    unresolved,
+    clientOnly,
+    overrideFiles,
+  };
 }
 
-export async function importPack(buffer: Buffer, onProgress?: ImportProgress): Promise<ImportResult> {
+export async function importPack(
+  buffer: Buffer,
+  onProgress?: ImportProgress,
+): Promise<ImportResult> {
   let zip: AdmZip;
   try {
     zip = new AdmZip(buffer);

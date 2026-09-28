@@ -15,16 +15,18 @@ export const factorioDefinition: GameDefinition = {
   steamAppId: 427520,
   gamePortProtocol: 'udp',
   // Factorio logs this exact transition once the save has finished loading and the game is
-  // actually joinable, well after the process itself starts.
+  // joinable, well after the process itself starts.
   readyLogPattern: /changing state from\(CreatingGame\) to\(InGame\)/,
   players: {
     list: {
       command: '/players online',
       // Matching "<name> (online)" per line is resilient to the header's exact wording changing
-      // across Factorio versions. No max here — Factorio's player cap isn't reported by this
-      // command and isn't something Outpost sets, so it's unknown rather than guessed.
+      // across Factorio versions.
       parse: (output) => ({
-        players: [...output.matchAll(/^\s*(\S+)\s+\(online\)/gm)].map((m) => ({ name: m[1]!, id: m[1]! })),
+        players: [...output.matchAll(/^\s*(\S+)\s+\(online\)/gm)].map((m) => ({
+          name: m[1]!,
+          id: m[1]!,
+        })),
         max: null,
       }),
     },
@@ -42,8 +44,7 @@ export const factorioDefinition: GameDefinition = {
     unban: (player) => `/unban ${player.name}`,
   },
 
-  // Written into config/server-settings.json by preCreate below — Factorio's headless server reads
-  // all of these from that file, there are no env vars for them.
+  // Written into config/server-settings.json by preCreate below.
   settings: [
     {
       key: 'max_players',
@@ -66,7 +67,7 @@ export const factorioDefinition: GameDefinition = {
     {
       key: 'require_user_verification',
       label: 'Require Factorio accounts',
-      info: 'On by default, verifies each player against Factorio\'s auth servers. Turn off only for a LAN game — with it off, anyone can join under any name.',
+      info: "On by default, verifies each player against Factorio's auth servers. Turn off only for a LAN game — with it off, anyone can join under any name.",
       type: 'toggle',
       default: 'true',
       onValue: 'true',
@@ -122,16 +123,13 @@ export const factorioDefinition: GameDefinition = {
       memoryMb,
       dataPath,
       // The entrypoint only auto-generates a random RCON password when config/rconpw doesn't
-      // already exist — it never reads an env var for this. Pre-seed it with our own password so
-      // it lines up with what we store for the console to actually connect with.
+      // already exist.
       async preCreate(hostPaths) {
         const configDir = path.join(hostPaths['']!, 'config');
         await fs.mkdir(configDir, { recursive: true });
         await fs.writeFile(path.join(configDir, 'rconpw'), rconPassword, 'utf8');
 
-        // Factorio reads every server option from this one file. The image only seeds its own copy
-        // when the file is absent, so writing it on each container create is what makes a changed
-        // setting actually apply. Any key left out here just falls back to Factorio's own default.
+        // Factorio reads every server option from this one file.
         await fs.writeFile(
           path.join(configDir, 'server-settings.json'),
           JSON.stringify(

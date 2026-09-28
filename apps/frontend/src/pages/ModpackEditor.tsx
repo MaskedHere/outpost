@@ -10,16 +10,24 @@ export default function ModpackEditor() {
   const { id } = useParams<{ id: string }>();
   const [pack, setPack] = useState<Pack | null>(null);
 
-  // Only fetched here for the "Back to <server>" link's label/target — ModpackPanel does its own
-  // (fresher) load of the pack for the actual editor content.
+  // Only fetched here for the "Back to <server>" link's label/target.
   useEffect(() => {
-    if (id) packsApi.get(id).then(setPack).catch(() => undefined);
+    if (id)
+      packsApi
+        .get(id)
+        .then(setPack)
+        .catch(() => undefined);
   }, [id]);
 
   if (!id) return null;
 
   return (
-    <motion.div variants={pageVariants} initial="initial" animate="animate" className="mx-auto max-w-5xl px-8 py-10">
+    <motion.div
+      variants={pageVariants}
+      initial="initial"
+      animate="animate"
+      className="mx-auto max-w-5xl px-8 py-10"
+    >
       <Link
         to={pack?.servers?.[0] ? `/servers/${pack.servers[0].id}` : '/'}
         className="mb-4 inline-flex items-center gap-1.5 text-sm text-base-500 hover:text-accent-400"

@@ -1,17 +1,6 @@
 import { useEffect, useState } from 'react';
 
-/**
- * Whether the decorative background layers should run.
- *
- * Currently that means the treeline's sway, which loops continuously. With GPU compositing it is
- * close to free; without it — a user who has turned hardware acceleration off, which plenty of
- * people do because it breaks their games — a permanently animating background is real CPU work on
- * every frame, and the whole panel feels sluggish for the sake of scenery.
- *
- * There is no honest way to ask a browser "is compositing accelerated?", so this measures the thing
- * we actually care about instead: whether the machine can sustain a reasonable frame rate with the
- * effects on. If it cannot, they are switched off and stay off.
- */
+/** Whether the decorative background layers should run. */
 export type EffectsPreference = 'auto' | 'on' | 'off';
 
 const STORAGE_KEY = 'outpost.visualEffects';

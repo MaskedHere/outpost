@@ -1,10 +1,24 @@
 import { useEffect, useState } from 'react';
-import { playersApi, type GameDef, type PlayerAction, type PlayerRef, type SeenPlayer } from '../../lib/api';
+import {
+  playersApi,
+  type GameDef,
+  type PlayerAction,
+  type PlayerRef,
+  type SeenPlayer,
+} from '../../lib/api';
 import Skeleton from '../Skeleton';
 
 type ActionDef = { action: PlayerAction; label: string; className: string };
 
-export default function PlayersPanel({ serverId, gameDef, running }: { serverId: string; gameDef: GameDef | undefined; running: boolean }) {
+export default function PlayersPanel({
+  serverId,
+  gameDef,
+  running,
+}: {
+  serverId: string;
+  gameDef: GameDef | undefined;
+  running: boolean;
+}) {
   const [players, setPlayers] = useState<PlayerRef[] | null>(null);
   const [banned, setBanned] = useState<PlayerRef[] | null>(null);
   const [offline, setOffline] = useState<SeenPlayer[] | null>(null);
@@ -43,7 +57,9 @@ export default function PlayersPanel({ serverId, gameDef, running }: { serverId:
         setOffline(r.players);
         setError(null);
       })
-      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load the offline player log'));
+      .catch((e) =>
+        setError(e instanceof Error ? e.message : 'Failed to load the offline player log'),
+      );
   };
 
   useEffect(() => {
@@ -61,8 +77,8 @@ export default function PlayersPanel({ serverId, gameDef, running }: { serverId:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, running]);
 
-  // Reset stale player/error state from a previous run so a fresh start doesn't briefly show
-  // the last session's roster or error message before the first poll lands.
+  // Clear the previous session's players and errors so a fresh start doesn't briefly show stale
+  // data.
   useEffect(() => {
     if (!running) {
       setPlayers(null);
@@ -77,7 +93,8 @@ export default function PlayersPanel({ serverId, gameDef, running }: { serverId:
       <div className="card p-5">
         <h3 className="mb-1 font-medium text-base-50">Players</h3>
         <p className="text-sm text-base-500">
-          This game has no RCON console for Outpost to manage players through, so there's no kick/ban here.
+          This game has no RCON console for Outpost to manage players through, so there's no
+          kick/ban here.
         </p>
       </div>
     );
@@ -87,7 +104,9 @@ export default function PlayersPanel({ serverId, gameDef, running }: { serverId:
     return (
       <div className="card p-5">
         <h3 className="mb-1 font-medium text-base-50">Players</h3>
-        <p className="text-sm text-base-500">The server needs to finish booting before players can be managed here.</p>
+        <p className="text-sm text-base-500">
+          The server needs to finish booting before players can be managed here.
+        </p>
       </div>
     );
   }
@@ -108,8 +127,7 @@ export default function PlayersPanel({ serverId, gameDef, running }: { serverId:
     }
   };
 
-  // Unban is non-destructive and reversible (just ban again), so it skips the confirm step —
-  // everything else (op/kick/kill/ban) arms an inline "are you sure" instead of firing immediately.
+  // Unban is non-destructive and reversible (just ban again), so it skips the confirm step.
   const requestAction = (action: PlayerAction, player: PlayerRef) => {
     if (action === 'unban') {
       act(action, player);
@@ -120,19 +138,27 @@ export default function PlayersPanel({ serverId, gameDef, running }: { serverId:
 
   const onlineActions = (player: PlayerRef): ActionDef[] => [
     ...(support.op
-      ? [player.isOp ? { action: 'deop' as const, label: 'De-op', className: 'btn-secondary' } : { action: 'op' as const, label: 'Op', className: 'btn-secondary' }]
+      ? [
+          player.isOp
+            ? { action: 'deop' as const, label: 'De-op', className: 'btn-secondary' }
+            : { action: 'op' as const, label: 'Op', className: 'btn-secondary' },
+        ]
       : []),
     { action: 'kick', label: 'Kick', className: 'btn-secondary' },
-    ...(support.kill ? [{ action: 'kill' as const, label: 'Kill', className: 'btn-secondary' }] : []),
+    ...(support.kill
+      ? [{ action: 'kill' as const, label: 'Kill', className: 'btn-secondary' }]
+      : []),
     { action: 'ban', label: 'Ban', className: 'btn-danger' },
   ];
 
-  const bannedActions = (): ActionDef[] => [{ action: 'unban', label: 'Unban', className: 'btn-secondary' }];
+  const bannedActions = (): ActionDef[] => [
+    { action: 'unban', label: 'Unban', className: 'btn-secondary' },
+  ];
 
-  // Kick/kill/op don't mean anything for someone who's not connected — the whole point of this
-  // view is "they already left," so the only action that still makes sense is banning them by the
-  // name/SteamID Outpost already has on file.
-  const offlineActions = (): ActionDef[] => [{ action: 'ban', label: 'Ban', className: 'btn-danger' }];
+  // Kick/kill/op don't mean anything for someone who's not connected.
+  const offlineActions = (): ActionDef[] => [
+    { action: 'ban', label: 'Ban', className: 'btn-danger' },
+  ];
 
   return (
     <div className="card p-5">
@@ -187,8 +213,8 @@ export default function PlayersPanel({ serverId, gameDef, running }: { serverId:
       {view === 'offline' && (
         <>
           <p className="mb-3 text-xs text-base-500">
-            Everyone RCON has seen connect who isn't online (or banned) right now — so someone who caused trouble and
-            left before you could act is still findable here.
+            Everyone RCON has seen connect who isn't online (or banned) right now — so someone who
+            caused trouble and left before you could act is still findable here.
           </p>
           <PlayerList
             players={offline}
@@ -264,9 +290,10 @@ function PlayerList({
 }) {
   if (loading) {
     return (
-      <ul className="divide-y divide-base-800">
+      // Same well as the loaded list, so the panel doesn't visibly change shape once players arrive.
+      <ul className="divide-y divide-base-800 rounded-xl border border-base-800 bg-base-950/60 px-3">
         {[0, 1, 2].map((i) => (
-          <li key={i} className="flex items-center gap-2.5 py-2.5 first:pt-0 last:pb-0">
+          <li key={i} className="flex items-center gap-2.5 py-2.5">
             <Skeleton className="h-7 w-7 shrink-0 rounded-md" />
             <Skeleton className="h-4 w-32" />
           </li>
@@ -275,15 +302,23 @@ function PlayerList({
     );
   }
   if (players === null) return null;
-  if (players.length === 0) return <p className="py-4 text-center text-sm text-base-500">{emptyLabel}</p>;
+  if (players.length === 0) {
+    return (
+      <div className="rounded-xl border border-base-800 bg-base-950/60 py-6">
+        <p className="text-center text-sm text-base-500">{emptyLabel}</p>
+      </div>
+    );
+  }
 
   return (
-    <ul className="divide-y divide-base-800">
+    // Recessed well around the roster only.
+    <ul className="divide-y divide-base-800 rounded-xl border border-base-800 bg-base-950/60 px-3">
       {players.map((p) => {
         const isConfirming = confirming?.id === p.id;
         const actions = getActions(p);
+        // No first/last padding reset inside the bordered well.
         return (
-          <li key={p.id} className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
+          <li key={p.id} className="flex items-center justify-between gap-3 py-2.5">
             <div className="flex min-w-0 items-center gap-2.5">
               {showHeads && (
                 <img
@@ -294,14 +329,26 @@ function PlayerList({
                 />
               )}
               <span className="truncate text-sm text-base-100">{p.name}</span>
-              {p.isOp && <span className="pill shrink-0 !px-1.5 !py-0.5 !text-[10px] text-accent-400">OP</span>}
-              {p.ping !== undefined && <span className={`shrink-0 text-xs ${pingColor(p.ping)}`}>{p.ping}ms</span>}
-              {p.lastSeenAt && <span className="shrink-0 text-xs text-base-500">last seen {formatLastSeen(p.lastSeenAt)}</span>}
+              {p.isOp && (
+                <span className="pill shrink-0 !px-1.5 !py-0.5 !text-[10px] text-accent-400">
+                  OP
+                </span>
+              )}
+              {p.ping !== undefined && (
+                <span className={`shrink-0 text-xs ${pingColor(p.ping)}`}>{p.ping}ms</span>
+              )}
+              {p.lastSeenAt && (
+                <span className="shrink-0 text-xs text-base-500">
+                  last seen {formatLastSeen(p.lastSeenAt)}
+                </span>
+              )}
             </div>
 
             {isConfirming ? (
               <div className="flex shrink-0 items-center gap-2">
-                <span className="text-xs text-base-500">{actions.find((a) => a.action === confirming.action)?.label ?? confirming.action}?</span>
+                <span className="text-xs text-base-500">
+                  {actions.find((a) => a.action === confirming.action)?.label ?? confirming.action}?
+                </span>
                 <button
                   className="btn-danger !px-2.5 !py-1 !text-xs"
                   disabled={busyId === p.id}

@@ -12,12 +12,14 @@ function isPortFree(port: number): Promise<boolean> {
   });
 }
 
-/** Picks `count` free host ports for a new server, none of them already used by another server
- *  and none of them already bound on the host. Doesn't need to be contiguous. */
+/**
+ * Picks `count` free host ports for a new server, none of them already used by another server and
+ * none of them already bound on the host.
+ */
 export async function allocatePorts(count: number): Promise<number[]> {
   const used = new Set(
-    (await prisma.gameServer.findMany({ select: { gamePort: true, rconPort: true } })).flatMap((s) =>
-      s.rconPort ? [s.gamePort, s.rconPort] : [s.gamePort],
+    (await prisma.gameServer.findMany({ select: { gamePort: true, rconPort: true } })).flatMap(
+      (s) => (s.rconPort ? [s.gamePort, s.rconPort] : [s.gamePort]),
     ),
   );
 

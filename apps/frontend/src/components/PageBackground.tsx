@@ -1,11 +1,6 @@
 import type { CSSProperties } from 'react';
 
-// A basic clip-art hillside — lookout tower + pine tree-line standing on a jagged hill, all one
-// flat dark-grey (same family as the rest of the UI, not green). Rendered as a real inline SVG
-// (not a CSS background-image) specifically so the trees can sway with plain CSS animations —
-// a background-image is opaque to page CSS, and SMIL (the alternative for animating *inside* an
-// SVG background-image) isn't reliably supported everywhere. Mounted once, fixed to the viewport,
-// so every page shares the same scene.
+// A basic clip-art hillside.
 const TREES = [
   { x: 10, y: 136, scale: 1, dur: 5, delay: 0, amp: 1 },
   { x: 120, y: 99, scale: 1.25, dur: 4.6, delay: 0.4, amp: 1.2 },
@@ -24,10 +19,7 @@ export default function PageBackground({ animate = true }: { animate?: boolean }
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-0 -z-10 h-[60vh]">
       {/* "slice" (rather than "meet") scales up to fully COVER the box on both axes instead of
-          fitting inside it — "meet" was leaving a gap on the right on wide/short viewports (e.g.
-          fullscreen) whenever height-driven auto-width came up short of the actual window width.
-          Anchored xMin/YMax so the left and bottom edges — where the tower and hill floor sit —
-          are never the side that gets cropped; only the right (and rarely the top) ever are. */}
+         fitting inside it. */}
       <svg
         className="absolute bottom-0 left-0 h-full w-full"
         viewBox="0 0 1200 400"

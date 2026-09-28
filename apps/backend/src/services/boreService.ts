@@ -2,11 +2,7 @@ import { docker } from '../docker/client.js';
 import { removeContainer } from '../docker/containers.js';
 import { readContainerLogs } from '../docker/cli.js';
 
-// ekzhang/bore (github.com/ekzhang/bore) + its free public bore.pub relay — a genuinely
-// account-free alternative to playit.gg for friends outside the LAN to join. Trade-offs the
-// playit.gg option doesn't have: bore only forwards TCP (so it only applies to games whose game
-// port is TCP — see GameDefinition.gamePortProtocol), and bore.pub is a single maintainer's free
-// community service with no uptime guarantee, unlike a company-backed product.
+// ekzhang/bore (github.com/ekzhang/bore) + its free public bore.pub relay.
 const BORE_IMAGE = 'ekzhang/bore:latest';
 
 export const BORE_PORT_MIN = 10000;
@@ -16,13 +12,19 @@ export function pickBorePort(): number {
   return BORE_PORT_MIN + Math.floor(Math.random() * (BORE_PORT_MAX - BORE_PORT_MIN));
 }
 
-export async function createBoreTunnel(containerName: string, gamePort: number, remotePort: number): Promise<string> {
+export async function createBoreTunnel(
+  containerName: string,
+  gamePort: number,
+  remotePort: number,
+): Promise<string> {
   const images = await docker.listImages({ filters: { reference: [BORE_IMAGE] } });
   if (images.length === 0) {
     await new Promise<void>((resolve, reject) => {
       docker.pull(BORE_IMAGE, (err: Error | null, stream: NodeJS.ReadableStream) => {
         if (err) return reject(err);
-        docker.modem.followProgress(stream, (progressErr) => (progressErr ? reject(progressErr) : resolve()));
+        docker.modem.followProgress(stream, (progressErr) =>
+          progressErr ? reject(progressErr) : resolve(),
+        );
       });
     });
   }
@@ -31,10 +33,10 @@ export async function createBoreTunnel(containerName: string, gamePort: number, 
     name: containerName,
     Image: BORE_IMAGE,
     // Requesting a specific remote port (rather than letting bore.pub assign one) means Outpost
-    // already knows the address — no fragile stdout-parsing needed to discover it after the fact.
+    // already knows the address.
     Cmd: ['local', String(gamePort), '--to', 'bore.pub', '--port', String(remotePort)],
     // Host networking so "local <port>" resolves to the Docker host's localhost, where the game
-    // container's published port actually lives — same reasoning as the playit.gg tunnel.
+    // container's published port lives.
     HostConfig: { NetworkMode: 'host', RestartPolicy: { Name: 'unless-stopped' } },
     Labels: { 'outpost.managed': 'true', 'outpost.bore': 'true' },
   });
@@ -44,11 +46,12 @@ export async function createBoreTunnel(containerName: string, gamePort: number, 
 
 export interface BoreStatus {
   running: boolean;
-  /** True once the logs show bore's own "connected to server" line — confirmed via a live test
-   *  against the real bore.pub relay, not a guess. */
+  /** True once the logs show bore's own "connected to server" line. */
   connected: boolean;
-  /** True when the logs suggest the requested port was rejected (e.g. already taken by someone
-   *  else on bore.pub) — the fix is just retrying, which picks a new random port. */
+  /**
+   * True when the logs suggest the requested port was rejected (e.g. already taken by someone else
+   * on bore.pub)
+   */
   failed: boolean;
   recentLogs: string;
 }

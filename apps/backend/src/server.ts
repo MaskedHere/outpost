@@ -15,6 +15,9 @@ import { fileRoutes } from './routes/files.js';
 import { backupRoutes } from './routes/backups.js';
 import { modpackRoutes } from './routes/modpacks.js';
 import { curseforgeRoutes } from './routes/curseforge.js';
+import { factorioRoutes } from './routes/factorio.js';
+import { workshopPackRoutes } from './routes/workshopPacks.js';
+import { storageRoutes } from './routes/storage.js';
 import { settingsRoutes } from './routes/settings.js';
 import { contentCacheRoutes } from './routes/contentCache.js';
 import { pluginRoutes } from './routes/plugins.js';
@@ -27,26 +30,33 @@ async function main() {
   await fs.mkdir(config.configDir, { recursive: true });
   await fs.mkdir(config.gameCacheDir, { recursive: true });
 
-  // Sessions are signed with this — on the default value anyone who knows Outpost is open source
-  // can mint a valid admin cookie. Fine (and convenient) for local development; refusing to boot
-  // in production is what stops a NAS install from silently going out with it unchanged.
-  if (process.env.NODE_ENV === 'production' && config.jwtSecret === 'dev-secret-change-me') {
+  // Sessions are signed with this.
+  const placeholderSecrets = ['dev-secret-change-me', 'please-change-this-to-a-long-random-string'];
+  if (process.env.NODE_ENV === 'production' && placeholderSecrets.includes(config.jwtSecret)) {
     console.error(
-      'Refusing to start: JWT_SECRET is still the built-in development default.\n' +
+      'Refusing to start: JWT_SECRET is still a placeholder value.\n' +
         'Set JWT_SECRET to a long random string (e.g. `openssl rand -hex 32`) and restart.',
     );
     process.exit(1);
   }
+  if (process.env.NODE_ENV === 'production' && config.jwtSecret.length < 32) {
+    console.warn(
+      'JWT_SECRET is shorter than 32 characters; generate one with `openssl rand -hex 32`.',
+    );
+  }
 
-  const app = Fastify({ logger: true, bodyLimit: 10 * 1024 * 1024 });
+  // bodyLimit covers non-multipart JSON bodies; uploads go through @fastify/multipart's own limit
+  // below. 64MB is far more than any API call here needs while still rejecting a runaway request.
+  const app = Fastify({ logger: true, bodyLimit: 64 * 1024 * 1024 });
 
-  // Unauthenticated on purpose — it's what the container HEALTHCHECK polls, and it reports nothing
-  // beyond "the process is up".
+  // Unauthenticated - it's what the container HEALTHCHECK polls, and it reports nothing beyond "the
+  // process is up".
   app.get('/api/health', async () => ({ ok: true }));
 
   await app.register(fastifyCors, { origin: true, credentials: true });
   await app.register(fastifyCookie);
-  await app.register(fastifyMultipart, { limits: { fileSize: 200 * 1024 * 1024 } });
+  // Real modpack uploads can be very large.
+  await app.register(fastifyMultipart, { limits: { fileSize: 16 * 1024 * 1024 * 1024 } });
   await app.register(fastifyWebsocket);
   await app.register(authPlugin);
 
@@ -57,6 +67,9 @@ async function main() {
   await app.register(backupRoutes);
   await app.register(modpackRoutes);
   await app.register(curseforgeRoutes);
+  await app.register(factorioRoutes);
+  await app.register(workshopPackRoutes);
+  await app.register(storageRoutes);
   await app.register(settingsRoutes);
   await app.register(pluginRoutes);
   await app.register(worldRoutes);
@@ -64,7 +77,7 @@ async function main() {
   await app.register(contentCacheRoutes);
 
   // In production the frontend is built into apps/frontend/dist and served from the same
-  // container/port as the API — this is what makes Outpost a single ZimaOS app.
+  // container/port as the API.
   const frontendDist = path.resolve(process.cwd(), '../frontend/dist');
   if (
     await fs

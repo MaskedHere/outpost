@@ -6,7 +6,9 @@ import Logo from './Logo';
 
 const navItemClass = ({ isActive }: { isActive: boolean }) =>
   `rounded-xl px-3 py-1.5 text-sm font-semibold transition-colors ${
-    isActive ? 'bg-accent-500/15 text-accent-400' : 'text-base-200 hover:bg-base-900 hover:text-base-50'
+    isActive
+      ? 'bg-accent-500/15 text-accent-400'
+      : 'text-base-200 hover:bg-base-900 hover:text-base-50'
   }`;
 
 export default function Layout() {
@@ -34,13 +36,17 @@ export default function Layout() {
         </nav>
 
         <div className="ml-auto flex items-center gap-3">
-          <span className="hidden text-xs text-base-500 sm:inline">Signed in as {status?.username}</span>
+          <span className="hidden text-xs text-base-500 sm:inline">
+            Signed in as {status?.username}
+          </span>
           <NavLink
             to="/settings"
             title="Settings"
             className={({ isActive }) =>
               `flex h-8 w-8 items-center justify-center rounded-xl transition-colors ${
-                isActive ? 'bg-accent-500/15 text-accent-400' : 'text-base-300 hover:bg-base-900 hover:text-base-50'
+                isActive
+                  ? 'bg-accent-500/15 text-accent-400'
+                  : 'text-base-300 hover:bg-base-900 hover:text-base-50'
               }`
             }
           >

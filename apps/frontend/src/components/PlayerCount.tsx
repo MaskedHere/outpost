@@ -1,7 +1,13 @@
 import { FiUsers } from 'react-icons/fi';
 import type { PlayerSummary } from '../lib/api';
 
-export default function PlayerCount({ players, className = '' }: { players: PlayerSummary | null; className?: string }) {
+export default function PlayerCount({
+  players,
+  className = '',
+}: {
+  players: PlayerSummary | null;
+  className?: string;
+}) {
   if (!players) return null;
   return (
     <span className={`inline-flex items-center gap-1 ${className}`}>

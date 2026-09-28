@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   curseforgeApi,
@@ -9,6 +9,8 @@ import {
   serversApi,
   settingsApi,
   steamWorkshopApi,
+  workshopPacksApi,
+  type WorkshopPack,
   type CurseForgeModSummary,
   type ModSearchOptions,
   type GameDef,
@@ -27,19 +29,26 @@ import { easeOut, pageVariants, staggerContainer, staggerItem } from '../lib/mot
 
 const LOADERS = ['fabric', 'forge', 'neoforge', 'quilt'];
 
-/** Stands in for "no category filter". Radix's Select treats an empty-string item value as "no
- *  selection" and refuses to render it, so the unfiltered option needs a real value of its own. */
+/** Stands in for "no category filter". */
 const ANY_CATEGORY = '__any__';
+
+/** The variants offered on the modded path. */
+function moddedVariantOptions(g: GameDef): string[] {
+  return g.moddedVariants.length > 0
+    ? g.variants.filter((v) => g.moddedVariants.includes(v))
+    : g.variants;
+}
 
 const GAME_STYLE: Record<string, string> = {
   minecraft: 'from-emerald-600/50 to-emerald-950/70',
   terraria: 'from-sky-600/50 to-lime-950/70',
   factorio: 'from-amber-600/50 to-amber-950/70',
   valheim: 'from-yellow-600/50 to-yellow-950/70',
-  gmod: 'from-fuchsia-600/50 to-fuchsia-950/70',
   tf2: 'from-red-600/50 to-red-950/70',
   '7dtd': 'from-orange-800/50 to-stone-950/70',
   zomboid: 'from-red-900/60 to-stone-950/80',
+  palworld: 'from-cyan-600/50 to-indigo-950/70',
+  bedrock: 'from-lime-600/50 to-emerald-950/70',
 };
 
 type Step =
@@ -70,17 +79,21 @@ export default function CreateServerWizard() {
   const [hostMemoryMb, setHostMemoryMb] = useState<number | undefined>(undefined);
   const [motd, setMotd] = useState('');
 
-  // Workshop-based modding (Garry's Mod / Project Zomboid)
-  const [workshopCollectionId, setWorkshopCollectionId] = useState('');
+  // Workshop-based modding (Project Zomboid, tModLoader)
   const [workshopItemIds, setWorkshopItemIds] = useState('');
   const [modIds, setModIds] = useState('');
-  // Zomboid has no native "give me everything in this collection" flag the way GMod's server does
-  // (see steamWorkshop.ts) — this resolves one client-side, then fills the two fields above exactly
-  // as if they'd been typed by hand.
+  // Saved Workshop packs for the chosen game.
+  const [workshopPacks, setWorkshopPacks] = useState<WorkshopPack[]>([]);
+  const [creatingPack, setCreatingPack] = useState(false);
+  const [packNote, setPackNote] = useState<string | null>(null);
+  // Zomboid has no native "install this collection" option, so collections are resolved here
+  // (see steamWorkshop.ts).
   const [zomboidCollectionId, setZomboidCollectionId] = useState('');
   const [resolvingCollection, setResolvingCollection] = useState(false);
   const [collectionError, setCollectionError] = useState<string | null>(null);
-  const [collectionUnresolved, setCollectionUnresolved] = useState<{ workshopId: string; title: string }[]>([]);
+  const [collectionUnresolved, setCollectionUnresolved] = useState<
+    { workshopId: string; title: string }[]
+  >([]);
 
   // Minecraft modpack flow
   const [pack, setPack] = useState<Pack | null>(null);
@@ -100,6 +113,8 @@ export default function CreateServerWizard() {
     sorts: { value: string; label: string }[];
   } | null>(null);
   const [cfResults, setCfResults] = useState<CurseForgeModSummary[]>([]);
+  const [cfCategory, setCfCategory] = useState('');
+  const [cfCategories, setCfCategories] = useState<{ value: string; label: string }[]>([]);
   const [cfAddingSlug, setCfAddingSlug] = useState<string | null>(null);
   const [addedCfSlugs, setAddedCfSlugs] = useState<Set<string>>(new Set());
 
@@ -136,7 +151,11 @@ export default function CreateServerWizard() {
     modrinthApi
       .filters()
       .then(setFilterOptions)
-      // Filters are an enhancement, not a requirement — search still works without them.
+      // Filters are an enhancement, not a requirement.
+      .catch(() => undefined);
+    curseforgeApi
+      .categories()
+      .then((r) => setCfCategories(r.categories))
       .catch(() => undefined);
   }, []);
 
@@ -150,13 +169,19 @@ export default function CreateServerWizard() {
     setName('');
     setMemoryMb(2048);
     setMotd('');
-    setVersion(g.id === 'minecraft' ? (gameVersions[0] ?? '1.21.1') : (g.versionPlaceholder?.split(' ')[0] ?? ''));
+    setVersion(
+      g.id === 'minecraft'
+        ? (gameVersions[0] ?? '1.21.1')
+        : (g.versionPlaceholder?.split(' ')[0] ?? ''),
+    );
   };
 
   const pickVanilla = (g: GameDef) => {
     setGame(g);
     setError(null);
-    const plainVariants = g.moddable ? g.variants.filter((v) => !g.moddedVariants.includes(v)) : g.variants;
+    const plainVariants = g.moddable
+      ? g.variants.filter((v) => !g.moddedVariants.includes(v))
+      : g.variants;
     setVariant(plainVariants[0] ?? g.variants[0] ?? '');
     resetCommonFields(g);
     setStep('vanilla');
@@ -166,9 +191,17 @@ export default function CreateServerWizard() {
     setGame(g);
     setError(null);
     resetCommonFields(g);
-    setWorkshopCollectionId('');
     setWorkshopItemIds('');
     setModIds('');
+    // Saved Workshop packs are only fetched once the modded path is chosen for a Workshop game.
+    setWorkshopPacks([]);
+    setPackNote(null);
+    if (g.moddingKind?.startsWith('workshop')) {
+      workshopPacksApi
+        .list()
+        .then((all) => setWorkshopPacks(all.filter((p) => p.game === g.id)))
+        .catch(() => undefined);
+    }
     if (g.moddingKind === 'minecraft') {
       setPack(null);
       setUnresolved([]);
@@ -176,7 +209,7 @@ export default function CreateServerWizard() {
       setPackLoader('fabric');
       setStep('modded-choice');
     } else {
-      setVariant(g.variants[0] ?? '');
+      setVariant(moddedVariantOptions(g)[0] ?? '');
       setStep('workshop');
     }
   };
@@ -215,11 +248,8 @@ export default function CreateServerWizard() {
         variant,
         version,
         memoryMb,
-        workshopCollectionId: game.moddingKind === 'workshop-collection' ? workshopCollectionId || undefined : undefined,
         workshopItemIds:
-          game.moddingKind === 'workshop-items'
-            ? splitList(workshopItemIds)
-            : undefined,
+          game.moddingKind === 'workshop-items' ? splitList(workshopItemIds) : undefined,
         modIds: game.moddingKind === 'workshop-items' ? splitList(modIds) : undefined,
       });
       navigate(`/servers/${server.id}`);
@@ -234,7 +264,11 @@ export default function CreateServerWizard() {
     setError(null);
     setSubmitting(true);
     try {
-      const p = await packsApi.create({ name: name || 'New pack', mcVersion: packMcVersion, loader: packLoader });
+      const p = await packsApi.create({
+        name: name || 'New pack',
+        mcVersion: packMcVersion,
+        loader: packLoader,
+      });
       setPack(p);
       setStep('modded-build');
     } catch (err) {
@@ -244,8 +278,7 @@ export default function CreateServerWizard() {
     }
   };
 
-  // Filters are passed explicitly rather than read from state inside the request, so a change can
-  // re-run the search immediately with its new value instead of waiting a render for state to land.
+  // Filters are passed explicitly so a change re-runs the search immediately with its new value.
   const runSearch = async (e?: FormEvent, overrides: ModSearchOptions = {}) => {
     e?.preventDefault();
     if (!pack) return;
@@ -277,13 +310,18 @@ export default function CreateServerWizard() {
     }
   };
 
-  const runCfSearch = async (e?: FormEvent) => {
+  const runCfSearch = async (e?: FormEvent, categoryOverride?: string) => {
     e?.preventDefault();
     if (!pack) return;
     setSearching(true);
     setError(null);
     try {
-      const res = await curseforgeApi.searchMods(query, pack.mcVersion, pack.loader);
+      const res = await curseforgeApi.searchMods(
+        query,
+        pack.mcVersion,
+        pack.loader,
+        categoryOverride ?? cfCategory,
+      );
       setCfResults(res.hits);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Search failed');
@@ -345,16 +383,18 @@ export default function CreateServerWizard() {
     }
   };
 
-  const runBrowseSearch = async (e?: FormEvent, queryOverride?: string, sourceOverride?: 'modrinth' | 'curseforge') => {
+  const runBrowseSearch = async (
+    e?: FormEvent,
+    queryOverride?: string,
+    sourceOverride?: 'modrinth' | 'curseforge',
+  ) => {
     e?.preventDefault();
     const source = sourceOverride ?? browseSource;
     setBrowsing(true);
     setError(null);
     try {
-      // Deliberately unfiltered by version/loader: the wizard defaults to the newest Minecraft
-      // release, and the packs people actually look for (All the Mods 10 and friends) track an older
-      // one, so filtering by the preset hid essentially the whole catalogue. Importing a pack adopts
-      // that pack's own version and loader, so there's nothing to reconcile.
+      // Not filtered by version/loader: popular packs often target an older Minecraft release than
+      // the wizard's default. Importing a pack adopts its own version and loader.
       if (source === 'curseforge') {
         const res = await curseforgeApi.searchModpacks(queryOverride ?? browseQuery);
         setCfBrowseResults(res.hits);
@@ -390,10 +430,7 @@ export default function CreateServerWizard() {
     setCfImportingSlug(hit.slug);
     setCfImportProgress({ phase: 'resolving' });
     try {
-      // These are only fallbacks — the pack's own manifest (or, for a server pack, its loader
-      // artifacts) decides the real version and loader. Sending the version CurseForge listed for
-      // this pack rather than whatever the wizard is preset to means the fallback is at least
-      // right about the game version if detection ever comes up empty.
+      // These are only fallbacks.
       const { jobId } = await curseforgeApi.startImport(
         hit.slug,
         hit.fileId,
@@ -402,9 +439,8 @@ export default function CreateServerWizard() {
         hit.name,
       );
       // Resolving a download link, pulling down a (sometimes 100-200MB+) file, and matching
-      // hundreds of mods against Modrinth can take minutes — the backend runs it as a background
-      // job and reports live phase/progress here instead of one opaque blocking request.
-      // eslint-disable-next-line no-constant-condition
+      // hundreds of mods against Modrinth can take minutes.
+       
       while (true) {
         await new Promise((res) => setTimeout(res, 700));
         const status = await curseforgeApi.getImportJob(jobId);
@@ -449,10 +485,17 @@ export default function CreateServerWizard() {
     <div className="mx-auto max-w-5xl px-8 py-10">
       <AnimatePresence mode="wait">
         {step === 'games' && (
-          <motion.div key="games" variants={pageVariants} initial="initial" animate="animate" exit="exit">
+          <motion.div
+            key="games"
+            variants={pageVariants}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+          >
             <h1 className="mb-1 text-2xl font-semibold text-base-50">New server</h1>
             <p className="mb-8 text-sm text-base-500">
-              Pick a game. It creates a real Docker container on your NAS, ready to join within a minute or two.
+              Pick a game. It creates a real Docker container on your NAS, ready to join within a
+              minute or two.
             </p>
 
             {loadError && (
@@ -479,7 +522,9 @@ export default function CreateServerWizard() {
                   whileHover={{ y: -4, transition: easeOut }}
                   className="group relative h-32 overflow-hidden rounded-2xl border border-base-800 shadow-lg"
                 >
-                  <div className={`absolute inset-0 bg-gradient-to-br ${GAME_STYLE[g.id] ?? 'from-base-700/50 to-base-950/70'}`} />
+                  <div
+                    className={`absolute inset-0 bg-gradient-to-br ${GAME_STYLE[g.id] ?? 'from-base-700/50 to-base-950/70'}`}
+                  />
                   {g.bannerUrl && (
                     <img
                       src={g.bannerUrl}
@@ -498,7 +543,9 @@ export default function CreateServerWizard() {
                     className="absolute inset-0 flex flex-col items-start justify-end p-4 text-left"
                     onClick={() => (g.moddable ? undefined : pickVanilla(g))}
                   >
-                    <span className="text-lg font-semibold text-white drop-shadow">{g.displayName}</span>
+                    <span className="text-lg font-semibold text-white drop-shadow">
+                      {g.displayName}
+                    </span>
                     {g.moddable && <span className="text-xs text-white/70">Vanilla or modded</span>}
                   </button>
 
@@ -539,10 +586,18 @@ export default function CreateServerWizard() {
         )}
 
         {step === 'vanilla' && game && (
-          <motion.div key="vanilla" variants={pageVariants} initial="initial" animate="animate" exit="exit">
+          <motion.div
+            key="vanilla"
+            variants={pageVariants}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+          >
             <BackLink onClick={backToGames} />
             <h1 className="mb-1 text-2xl font-semibold text-base-50">{game.displayName}</h1>
-            <p className="mb-8 text-sm text-base-500">Set it up and it'll be live in a minute or two.</p>
+            <p className="mb-8 text-sm text-base-500">
+              Set it up and it'll be live in a minute or two.
+            </p>
 
             <form onSubmit={handleVanillaSubmit} className="card space-y-5 p-6">
               <div>
@@ -562,7 +617,8 @@ export default function CreateServerWizard() {
               {game.variants.length > 1 && (
                 <div>
                   <label className="label flex items-center gap-1.5" htmlFor="variant">
-                    {game.variantFieldLabel ?? (game.id === 'minecraft' ? 'Server type' : 'Variant')}
+                    {game.variantFieldLabel ??
+                      (game.id === 'minecraft' ? 'Server type' : 'Variant')}
                     {game.id === 'minecraft' && (
                       <InfoTip text="Vanilla: unmodified official server, exactly what a normal Minecraft client connects to. Paper: a drop-in replacement that's much more performant and adds a plugin system (Bukkit/Spigot plugins) — same vanilla gameplay unless you install plugins." />
                     )}
@@ -571,7 +627,12 @@ export default function CreateServerWizard() {
                     id="variant"
                     value={variant}
                     onChange={setVariant}
-                    options={variantOptions(game, game.moddable ? game.variants.filter((v) => !game.moddedVariants.includes(v)) : game.variants)}
+                    options={variantOptions(
+                      game,
+                      game.moddable
+                        ? game.variants.filter((v) => !game.moddedVariants.includes(v))
+                        : game.variants,
+                    )}
                   />
                 </div>
               )}
@@ -582,7 +643,12 @@ export default function CreateServerWizard() {
                     {game.versionLabel}
                   </label>
                   {game.id === 'minecraft' && gameVersions.length > 0 ? (
-                    <SearchableSelect id="version" value={version} onChange={setVersion} options={gameVersions} />
+                    <SearchableSelect
+                      id="version"
+                      value={version}
+                      onChange={setVersion}
+                      options={gameVersions}
+                    />
                   ) : (
                     <input
                       id="version"
@@ -630,11 +696,20 @@ export default function CreateServerWizard() {
         )}
 
         {step === 'workshop' && game && (
-          <motion.div key="workshop" variants={pageVariants} initial="initial" animate="animate" exit="exit">
+          <motion.div
+            key="workshop"
+            variants={pageVariants}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+          >
             <BackLink onClick={backToGames} />
-            <h1 className="mb-1 text-2xl font-semibold text-base-50">{game.displayName} · Modded</h1>
+            <h1 className="mb-1 text-2xl font-semibold text-base-50">
+              {game.displayName} · Modded
+            </h1>
             <p className="mb-8 text-sm text-base-500">
-              Steam Workshop content downloads automatically at first boot — no Steam account needed.
+              Steam Workshop content downloads automatically at first boot — no Steam account
+              needed.
             </p>
 
             <form onSubmit={handleWorkshopSubmit} className="card space-y-5 p-6">
@@ -652,78 +727,164 @@ export default function CreateServerWizard() {
                 />
               </div>
 
-              {game.variants.length > 1 && (
+              {moddedVariantOptions(game).length > 1 && (
                 <div>
                   <label className="label" htmlFor="ws-variant">
                     Variant
                   </label>
-                  <Select id="ws-variant" value={variant} onChange={setVariant} options={game.variants} />
+                  <Select
+                    id="ws-variant"
+                    value={variant}
+                    onChange={setVariant}
+                    options={variantOptions(game, moddedVariantOptions(game))}
+                  />
                 </div>
               )}
 
-              {game.moddingKind === 'workshop-collection' && (
-                <div>
-                  <label className="label" htmlFor="ws-collection">
-                    Steam Workshop collection ID
+              {/* A saved pack is a reusable alternative to pasting ids; applying one fills the
+                 fields below, which stay editable. */}
+              <div className="rounded-xl border border-base-700 bg-base-800/40 p-4">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <label className="label flex items-center gap-1.5">
+                    Workshop pack
+                    <InfoTip text="A list of Workshop items Outpost saves for you, reusable across servers. It isn't a Steam collection — publishing to Steam needs a Steam account — but you can build one here, or seed it from a collection you already have." />
                   </label>
-                  <input
-                    id="ws-collection"
-                    className="input"
-                    value={workshopCollectionId}
-                    onChange={(e) => setWorkshopCollectionId(e.target.value)}
-                    placeholder="e.g. 123456789"
-                  />
-                  <p className="mt-1.5 text-xs text-base-500">
-                    The numeric ID from a Workshop collection's URL. Leave blank to start with no addons and add a
-                    collection later from Settings.
-                  </p>
+                  <button
+                    type="button"
+                    className="btn-secondary !py-1 !text-xs"
+                    disabled={creatingPack}
+                    onClick={async () => {
+                      if (!game) return;
+                      setCreatingPack(true);
+                      try {
+                        const created = await workshopPacksApi.create(
+                          name.trim() || `${game.displayName} pack`,
+                          game.id,
+                        );
+                        navigate(`/workshop-packs/${created.id}`);
+                      } catch (err) {
+                        setError(err instanceof Error ? err.message : 'Failed to create pack');
+                      } finally {
+                        setCreatingPack(false);
+                      }
+                    }}
+                  >
+                    {creatingPack ? 'Creating…' : 'Build a pack'}
+                  </button>
                 </div>
-              )}
+                {workshopPacks.length === 0 ? (
+                  <p className="text-xs text-base-500">
+                    No saved packs for {game.displayName} yet. Build one to search the Workshop
+                    in-app and reuse the same set of mods on future servers.
+                  </p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {workshopPacks.map((p) => (
+                      <div key={p.id} className="flex items-center gap-2">
+                        <span className="min-w-0 flex-1 truncate text-sm text-base-200">
+                          {p.name}
+                          <span className="ml-2 text-xs text-base-500">
+                            {p._count?.items ?? 0} items
+                          </span>
+                        </span>
+                        <Link
+                          className="text-xs text-base-500 hover:text-base-200"
+                          to={`/workshop-packs/${p.id}`}
+                        >
+                          Edit
+                        </Link>
+                        <button
+                          type="button"
+                          className="btn-secondary shrink-0 !py-1 !text-xs"
+                          onClick={async () => {
+                            const full = await workshopPacksApi.get(p.id).catch(() => null);
+                            if (!full || !game) return;
+                            // The two fields are paired by position, and splitList drops blanks.
+                            const usable = game.workshopRequiresModIds
+                              ? full.items.filter((i) => i.modId)
+                              : full.items;
+                            const skipped = full.items.length - usable.length;
+                            setWorkshopItemIds(usable.map((i) => i.workshopItemId).join(', '));
+                            setModIds(
+                              game.workshopRequiresModIds
+                                ? usable.map((i) => i.modId).join(', ')
+                                : '',
+                            );
+                            setPackNote(
+                              skipped > 0
+                                ? `Added ${usable.length} of ${full.items.length}. ${skipped} still ${skipped === 1 ? 'needs a Mod ID' : 'need Mod IDs'} — edit the pack to add ${skipped === 1 ? 'it' : 'them'}.`
+                                : `Added ${usable.length} item${usable.length === 1 ? '' : 's'} from ${full.name}.`,
+                            );
+                          }}
+                        >
+                          Use
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {packNote && <p className="mt-2 text-xs text-base-400">{packNote}</p>}
+              </div>
 
               {game.moddingKind === 'workshop-items' && (
                 <>
-                  <div className="rounded-xl border border-base-700 bg-base-800/40 p-4">
-                    <label className="label flex items-center gap-1.5" htmlFor="ws-collection">
-                      Steam Workshop collection ID
-                      <InfoTip text="Paste a collection's numeric ID (from its Workshop page URL) instead of hunting up every mod's item ID and mod ID by hand — this fetches the whole collection and fills in both fields below automatically. Mods whose page doesn't list a Mod ID in the expected format are called out separately so you can add them yourself." />
-                    </label>
-                    <div className="flex gap-2">
-                      <input
-                        id="ws-collection"
-                        className="input"
-                        value={zomboidCollectionId}
-                        onChange={(e) => setZomboidCollectionId(e.target.value)}
-                        placeholder="e.g. 3610184378"
-                      />
-                      <button
-                        type="button"
-                        className="btn-secondary shrink-0"
-                        onClick={resolveZomboidCollection}
-                        disabled={resolvingCollection || !zomboidCollectionId.trim()}
-                      >
-                        {resolvingCollection ? 'Resolving…' : 'Resolve'}
-                      </button>
-                    </div>
-                    {collectionError && <p className="mt-1.5 text-xs text-red-400">{collectionError}</p>}
-                    {collectionUnresolved.length > 0 && (
-                      <div className="mt-2 rounded-lg bg-ember-500/5 p-2.5">
-                        <p className="text-xs text-ember-400">
-                          {collectionUnresolved.length} mod{collectionUnresolved.length === 1 ? '' : 's'} couldn't be
-                          auto-matched — add its Mod ID manually if you want it included:
-                        </p>
-                        <ul className="mt-1 space-y-0.5 text-xs text-base-500">
-                          {collectionUnresolved.map((u) => (
-                            <li key={u.workshopId}>{u.title}</li>
-                          ))}
-                        </ul>
+                  {/* The collection resolver exists to fill in the Mod IDs field, so it only earns
+                     its place for games that need that second identifier. */}
+                  {game.workshopRequiresModIds && (
+                    <div className="rounded-xl border border-base-700 bg-base-800/40 p-4">
+                      <label className="label flex items-center gap-1.5" htmlFor="ws-collection">
+                        Steam Workshop collection ID
+                        <InfoTip text="Paste a collection's numeric ID (from its Workshop page URL) instead of hunting up every mod's item ID and mod ID by hand — this fetches the whole collection and fills in both fields below automatically. Mods whose page doesn't list a Mod ID in the expected format are called out separately so you can add them yourself." />
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          id="ws-collection"
+                          className="input"
+                          value={zomboidCollectionId}
+                          onChange={(e) => setZomboidCollectionId(e.target.value)}
+                          placeholder="e.g. 3610184378"
+                        />
+                        <button
+                          type="button"
+                          className="btn-secondary shrink-0"
+                          onClick={resolveZomboidCollection}
+                          disabled={resolvingCollection || !zomboidCollectionId.trim()}
+                        >
+                          {resolvingCollection ? 'Resolving…' : 'Resolve'}
+                        </button>
                       </div>
-                    )}
-                    <p className="mt-1.5 text-xs text-base-500">Fills in the two fields below — review before creating the server.</p>
-                  </div>
+                      {collectionError && (
+                        <p className="mt-1.5 text-xs text-red-400">{collectionError}</p>
+                      )}
+                      {collectionUnresolved.length > 0 && (
+                        <div className="mt-2 rounded-lg bg-ember-500/5 p-2.5">
+                          <p className="text-xs text-ember-400">
+                            {collectionUnresolved.length} mod
+                            {collectionUnresolved.length === 1 ? '' : 's'} couldn't be auto-matched
+                            — add its Mod ID manually if you want it included:
+                          </p>
+                          <ul className="mt-1 space-y-0.5 text-xs text-base-500">
+                            {collectionUnresolved.map((u) => (
+                              <li key={u.workshopId}>{u.title}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      <p className="mt-1.5 text-xs text-base-500">
+                        Fills in the two fields below — review before creating the server.
+                      </p>
+                    </div>
+                  )}
                   <div>
                     <label className="label flex items-center gap-1.5" htmlFor="ws-items">
                       Steam Workshop item IDs
-                      <InfoTip text="Comma-separated numeric IDs, one per mod, from each mod's Workshop page URL (the number after ?id=). These just get the files downloaded — Project Zomboid still needs the separate 'Matching mod IDs' field to actually enable them." />
+                      <InfoTip
+                        text={
+                          game.workshopRequiresModIds
+                            ? "Comma-separated numeric IDs, one per mod, from each mod's Workshop page URL (the number after ?id=). These just get the files downloaded — Project Zomboid still needs the separate 'Matching mod IDs' field to actually enable them."
+                            : "Comma-separated numeric IDs, one per mod, from each mod's Workshop page URL (the number after ?id=). tModLoader downloads and enables them by this ID alone, so there's nothing else to fill in."
+                        }
+                      />
                     </label>
                     <input
                       id="ws-items"
@@ -732,24 +893,34 @@ export default function CreateServerWizard() {
                       onChange={(e) => setWorkshopItemIds(e.target.value)}
                       placeholder="2160432461, 2685168362"
                     />
+                    {!game.workshopRequiresModIds && (
+                      <p className="mt-1.5 text-xs text-base-500">
+                        Find these on the Terraria Workshop — each mod's page URL ends in{' '}
+                        <code>?id=</code> followed by its number. Leave blank to start unmodded and
+                        add mods later from Settings.
+                      </p>
+                    )}
                   </div>
-                  <div>
-                    <label className="label flex items-center gap-1.5" htmlFor="ws-modids">
-                      Matching mod IDs
-                      <InfoTip text="Each mod's own internal Mod ID (not the Workshop item ID) — find it on the mod's Workshop page, usually in the description, in the same order as the item IDs above. Zomboid needs both: the item ID to download it, the mod ID to actually turn it on." />
-                    </label>
-                    <input
-                      id="ws-modids"
-                      className="input"
-                      value={modIds}
-                      onChange={(e) => setModIds(e.target.value)}
-                      placeholder="ClaimNonResidential, MoreDescriptionForTraits"
-                    />
-                    <p className="mt-1.5 text-xs text-base-500">
-                      Each mod's own internal ID (shown on its Workshop page, not the numeric item ID) — same order
-                      as the Workshop IDs above. Leave both blank to start unmodded and add mods later.
-                    </p>
-                  </div>
+                  {game.workshopRequiresModIds && (
+                    <div>
+                      <label className="label flex items-center gap-1.5" htmlFor="ws-modids">
+                        Matching mod IDs
+                        <InfoTip text="Each mod's own internal Mod ID (not the Workshop item ID) — find it on the mod's Workshop page, usually in the description, in the same order as the item IDs above. Zomboid needs both: the item ID to download it, the mod ID to actually turn it on." />
+                      </label>
+                      <input
+                        id="ws-modids"
+                        className="input"
+                        value={modIds}
+                        onChange={(e) => setModIds(e.target.value)}
+                        placeholder="ClaimNonResidential, MoreDescriptionForTraits"
+                      />
+                      <p className="mt-1.5 text-xs text-base-500">
+                        Each mod's own internal ID (shown on its Workshop page, not the numeric item
+                        ID) — same order as the Workshop IDs above. Leave both blank to start
+                        unmodded and add mods later.
+                      </p>
+                    </div>
+                  )}
                 </>
               )}
 
@@ -757,7 +928,12 @@ export default function CreateServerWizard() {
 
               {error && <p className="text-sm text-red-400">{error}</p>}
 
-              <motion.button type="submit" whileTap={{ scale: 0.98 }} className="btn-primary w-full" disabled={submitting}>
+              <motion.button
+                type="submit"
+                whileTap={{ scale: 0.98 }}
+                className="btn-primary w-full"
+                disabled={submitting}
+              >
                 {submitting ? 'Creating…' : 'Create server'}
               </motion.button>
             </form>
@@ -765,10 +941,20 @@ export default function CreateServerWizard() {
         )}
 
         {step === 'modded-choice' && game && (
-          <motion.div key="modded-choice" variants={pageVariants} initial="initial" animate="animate" exit="exit">
+          <motion.div
+            key="modded-choice"
+            variants={pageVariants}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+          >
             <BackLink onClick={backToGames} />
-            <h1 className="mb-1 text-2xl font-semibold text-base-50">{game.displayName} · Modded</h1>
-            <p className="mb-8 text-sm text-base-500">Browse an existing pack, import one, or build one now.</p>
+            <h1 className="mb-1 text-2xl font-semibold text-base-50">
+              {game.displayName} · Modded
+            </h1>
+            <p className="mb-8 text-sm text-base-500">
+              Browse an existing pack, import one, or build one now.
+            </p>
 
             <div className="card mb-6 space-y-4 p-6">
               <div>
@@ -789,7 +975,12 @@ export default function CreateServerWizard() {
                     Minecraft version
                   </label>
                   {gameVersions.length > 0 ? (
-                    <SearchableSelect id="modded-version" value={packMcVersion} onChange={setPackMcVersion} options={gameVersions} />
+                    <SearchableSelect
+                      id="modded-version"
+                      value={packMcVersion}
+                      onChange={setPackMcVersion}
+                      options={gameVersions}
+                    />
                   ) : (
                     <input
                       id="modded-version"
@@ -805,7 +996,12 @@ export default function CreateServerWizard() {
                     Loader
                     <InfoTip text="The mod-loading framework mods are built for — a mod only works with the loader it was made for. Forge and NeoForge (NeoForge is Forge's actively-developed successor for 1.20.6+) have the biggest mod libraries; Fabric is lighter-weight and updates to new Minecraft versions faster; Quilt is a Fabric-compatible fork with some extra features. Check what your intended modpack needs before picking." />
                   </label>
-                  <Select id="modded-loader" value={packLoader} onChange={setPackLoader} options={LOADERS} />
+                  <Select
+                    id="modded-loader"
+                    value={packLoader}
+                    onChange={setPackLoader}
+                    options={LOADERS}
+                  />
                 </div>
               </div>
               <MemoryPicker value={memoryMb} onChange={setMemoryMb} hostMemoryMb={hostMemoryMb} />
@@ -827,7 +1023,9 @@ export default function CreateServerWizard() {
                 }}
               >
                 <h2 className="mb-1 font-medium text-base-50">Browse packs</h2>
-                <p className="text-sm text-base-500">Search existing modpacks on Modrinth or CurseForge.</p>
+                <p className="text-sm text-base-500">
+                  Search existing modpacks on Modrinth or CurseForge.
+                </p>
               </motion.button>
               <motion.button
                 type="button"
@@ -842,7 +1040,9 @@ export default function CreateServerWizard() {
                 }}
               >
                 <h2 className="mb-1 font-medium text-base-50">Import a modpack</h2>
-                <p className="text-sm text-base-500">A .mrpack, a CurseForge zip, or a plain zip of .jar mods.</p>
+                <p className="text-sm text-base-500">
+                  A .mrpack, a CurseForge zip, or a plain zip of .jar mods.
+                </p>
               </motion.button>
               <motion.button
                 type="button"
@@ -862,18 +1062,27 @@ export default function CreateServerWizard() {
         )}
 
         {step === 'modded-browse' && game && (
-          <motion.div key="modded-browse" variants={pageVariants} initial="initial" animate="animate" exit="exit">
+          <motion.div
+            key="modded-browse"
+            variants={pageVariants}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+          >
             <BackLink onClick={() => setStep('modded-choice')} label="Back" />
             <h1 className="mb-1 text-2xl font-semibold text-base-50">Browse modpacks</h1>
             <p className="mb-4 text-sm text-base-500">
-              {browseSource === 'curseforge' ? 'CurseForge' : 'Modrinth'} packs for {packMcVersion} · {packLoader}.
+              {browseSource === 'curseforge' ? 'CurseForge' : 'Modrinth'} packs for {packMcVersion}{' '}
+              · {packLoader}.
             </p>
 
             <div className="mb-4 flex items-center gap-1 rounded-lg bg-base-800 p-1 text-sm">
               <button
                 type="button"
                 className={`rounded-md px-3 py-1.5 font-medium transition-colors ${
-                  browseSource === 'modrinth' ? 'bg-base-700 text-base-50' : 'text-base-500 hover:text-base-200'
+                  browseSource === 'modrinth'
+                    ? 'bg-base-700 text-base-50'
+                    : 'text-base-500 hover:text-base-200'
                 }`}
                 onClick={() => {
                   setBrowseSource('modrinth');
@@ -885,7 +1094,9 @@ export default function CreateServerWizard() {
               <button
                 type="button"
                 className={`rounded-md px-3 py-1.5 font-medium transition-colors ${
-                  browseSource === 'curseforge' ? 'bg-base-700 text-base-50' : 'text-base-500 hover:text-base-200'
+                  browseSource === 'curseforge'
+                    ? 'bg-base-700 text-base-50'
+                    : 'text-base-500 hover:text-base-200'
                 }`}
                 onClick={() => {
                   setBrowseSource('curseforge');
@@ -911,13 +1122,21 @@ export default function CreateServerWizard() {
 
             {cfImportProgress && (
               <div className="card mb-4 p-4">
-                <p className="mb-2 text-sm text-base-200">{describeImportProgress(cfImportProgress).label}</p>
+                <p className="mb-2 text-sm text-base-200">
+                  {describeImportProgress(cfImportProgress).label}
+                </p>
                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-base-800">
                   <motion.div
                     className="h-full rounded-full bg-accent-500"
-                    animate={{ width: `${describeImportProgress(cfImportProgress).percent ?? 100}%` }}
+                    animate={{
+                      width: `${describeImportProgress(cfImportProgress).percent ?? 100}%`,
+                    }}
                     transition={{ duration: 0.3 }}
-                    style={!describeImportProgress(cfImportProgress).determinate ? { opacity: 0.5 } : undefined}
+                    style={
+                      !describeImportProgress(cfImportProgress).determinate
+                        ? { opacity: 0.5 }
+                        : undefined
+                    }
                   />
                 </div>
               </div>
@@ -926,15 +1145,30 @@ export default function CreateServerWizard() {
             {error && <p className="mb-4 text-sm text-red-400">{error}</p>}
 
             {browseSource === 'curseforge' ? (
-              <motion.div variants={staggerContainer} initial="initial" animate="animate" className="card divide-y divide-base-800">
+              <motion.div
+                variants={staggerContainer}
+                initial="initial"
+                animate="animate"
+                className="card divide-y divide-base-800"
+              >
                 {cfBrowseResults.map((hit) => (
-                  <motion.div variants={staggerItem} key={hit.slug} className="flex items-center gap-3 p-3">
-                    {hit.logoUrl && <img src={hit.logoUrl} alt="" className="h-10 w-10 rounded-lg" />}
+                  <motion.div
+                    variants={staggerItem}
+                    key={hit.slug}
+                    className="flex items-center gap-3 p-3"
+                  >
+                    {hit.logoUrl && (
+                      <img src={hit.logoUrl} alt="" className="h-10 w-10 rounded-lg" />
+                    )}
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm text-base-100">
                         {hit.name}
-                        {/* Results aren't version-filtered any more, so each one states its own. */}
-                        {hit.gameVersion && <span className="ml-2 text-xs font-normal text-base-500">{hit.gameVersion}</span>}
+                        {/* Results aren't version-filtered, so each one shows its own version. */}
+                        {hit.gameVersion && (
+                          <span className="ml-2 text-xs font-normal text-base-500">
+                            {hit.gameVersion}
+                          </span>
+                        )}
                       </p>
                       <p className="truncate text-xs text-base-500">{hit.summary}</p>
                     </div>
@@ -955,17 +1189,31 @@ export default function CreateServerWizard() {
                 )}
               </motion.div>
             ) : (
-              <motion.div variants={staggerContainer} initial="initial" animate="animate" className="card divide-y divide-base-800">
+              <motion.div
+                variants={staggerContainer}
+                initial="initial"
+                animate="animate"
+                className="card divide-y divide-base-800"
+              >
                 {browseResults.map((hit) => (
-                  <motion.div variants={staggerItem} key={hit.project_id} className="flex items-center gap-3 p-3">
-                    {hit.icon_url && <img src={hit.icon_url} alt="" className="h-10 w-10 rounded-lg" />}
+                  <motion.div
+                    variants={staggerItem}
+                    key={hit.project_id}
+                    className="flex items-center gap-3 p-3"
+                  >
+                    {hit.icon_url && (
+                      <img src={hit.icon_url} alt="" className="h-10 w-10 rounded-lg" />
+                    )}
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm text-base-100">
                         {hit.title}
                         {/* Newest supported version plus the loader tag Modrinth files under
-                            categories — results aren't version-filtered, so each says what it targets. */}
+                           categories. */}
                         <span className="ml-2 text-xs font-normal text-base-500">
-                          {[hit.versions?.[hit.versions.length - 1], hit.categories?.find((c) => LOADERS.includes(c))]
+                          {[
+                            hit.versions?.[hit.versions.length - 1],
+                            hit.categories?.find((c) => LOADERS.includes(c)),
+                          ]
                             .filter(Boolean)
                             .join(' · ')}
                         </span>
@@ -993,72 +1241,89 @@ export default function CreateServerWizard() {
         )}
 
         {step === 'modded-import' && game && (
-          <motion.div key="modded-import" variants={pageVariants} initial="initial" animate="animate" exit="exit">
+          <motion.div
+            key="modded-import"
+            variants={pageVariants}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+          >
             <BackLink onClick={() => setStep('modded-choice')} label="Back" />
             <h1 className="mb-1 text-2xl font-semibold text-base-50">Import modpack</h1>
-            <p className="mb-8 text-sm text-base-500">We'll match it against Modrinth, then you can deploy it.</p>
+            <p className="mb-8 text-sm text-base-500">
+              We'll match it against Modrinth, then you can deploy it.
+            </p>
 
-            <DropZone onDrop={(files) => setImportFile(files[0] ?? null)} hint="A .mrpack, CurseForge .zip, or a zip of .jar mods">
+            <DropZone
+              onDrop={(files) => setImportFile(files[0] ?? null)}
+              hint="A .mrpack, CurseForge .zip, or a zip of .jar mods"
+            >
               <form onSubmit={handleImportSubmit} className="card space-y-5 p-6">
                 <div>
-                <label className="label" htmlFor="pack-file">
-                  Modpack file
-                </label>
-                <input
-                  id="pack-file"
-                  type="file"
-                  accept=".zip,.mrpack"
-                  className="input file:mr-3 file:rounded-lg file:border-0 file:bg-base-700 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-base-50"
-                  onChange={(e) => setImportFile(e.target.files?.[0] ?? null)}
-                  required
-                />
-                <p className="mt-1.5 text-xs text-base-500">
-                  Accepts a Modrinth <code>.mrpack</code>, a CurseForge modpack zip, or a plain zip of{' '}
-                  <code>.jar</code> mods.
-                </p>
-              </div>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div>
-                  <label className="label" htmlFor="import-version">
-                    Minecraft version (if not detected)
+                  <label className="label" htmlFor="pack-file">
+                    Modpack file
                   </label>
                   <input
-                    id="import-version"
-                    className="input"
-                    value={importMcVersion}
-                    onChange={(e) => setImportMcVersion(e.target.value)}
-                    placeholder="1.21.1"
+                    id="pack-file"
+                    type="file"
+                    accept=".zip,.mrpack"
+                    className="input file:mr-3 file:rounded-lg file:border-0 file:bg-base-700 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-base-50"
+                    onChange={(e) => setImportFile(e.target.files?.[0] ?? null)}
+                    required
                   />
+                  <p className="mt-1.5 text-xs text-base-500">
+                    Accepts a Modrinth <code>.mrpack</code>, a CurseForge modpack zip, or a plain
+                    zip of <code>.jar</code> mods.
+                  </p>
                 </div>
-                <div>
-                  <label className="label" htmlFor="import-loader">
-                    Loader (if not detected)
-                  </label>
-                  <Select
-                    id="import-loader"
-                    value={importLoader}
-                    onChange={setImportLoader}
-                    placeholder="Auto-detect"
-                    options={LOADERS}
-                  />
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="label" htmlFor="import-version">
+                      Minecraft version (if not detected)
+                    </label>
+                    <input
+                      id="import-version"
+                      className="input"
+                      value={importMcVersion}
+                      onChange={(e) => setImportMcVersion(e.target.value)}
+                      placeholder="1.21.1"
+                    />
+                  </div>
+                  <div>
+                    <label className="label" htmlFor="import-loader">
+                      Loader (if not detected)
+                    </label>
+                    <Select
+                      id="import-loader"
+                      value={importLoader}
+                      onChange={setImportLoader}
+                      placeholder="Auto-detect"
+                      options={LOADERS}
+                    />
+                  </div>
                 </div>
-              </div>
-              {error && <p className="text-sm text-red-400">{error}</p>}
-              <motion.button
-                type="submit"
-                whileTap={{ scale: 0.98 }}
-                className="btn-primary w-full"
-                disabled={!importFile || submitting}
-              >
-                {submitting ? 'Importing…' : 'Import pack'}
-              </motion.button>
+                {error && <p className="text-sm text-red-400">{error}</p>}
+                <motion.button
+                  type="submit"
+                  whileTap={{ scale: 0.98 }}
+                  className="btn-primary w-full"
+                  disabled={!importFile || submitting}
+                >
+                  {submitting ? 'Importing…' : 'Import pack'}
+                </motion.button>
               </form>
             </DropZone>
           </motion.div>
         )}
 
         {step === 'modded-build' && pack && (
-          <motion.div key="modded-build" variants={pageVariants} initial="initial" animate="animate" exit="exit">
+          <motion.div
+            key="modded-build"
+            variants={pageVariants}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+          >
             <BackLink onClick={() => setStep('modded-choice')} label="Back" />
             <div className="mb-6 flex items-center justify-between">
               <div>
@@ -1067,7 +1332,11 @@ export default function CreateServerWizard() {
                   {pack.mcVersion} · {pack.loader} · {pack.items.length} mods
                 </p>
               </div>
-              <motion.button whileTap={{ scale: 0.98 }} className="btn-primary" onClick={() => setStep('deploy')}>
+              <motion.button
+                whileTap={{ scale: 0.98 }}
+                className="btn-primary"
+                onClick={() => setStep('deploy')}
+              >
                 Continue to deploy →
               </motion.button>
             </div>
@@ -1084,7 +1353,9 @@ export default function CreateServerWizard() {
                     <button
                       type="button"
                       className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
-                        buildSource === 'modrinth' ? 'bg-base-700 text-base-50' : 'text-base-500 hover:text-base-200'
+                        buildSource === 'modrinth'
+                          ? 'bg-base-700 text-base-50'
+                          : 'text-base-500 hover:text-base-200'
                       }`}
                       onClick={() => setBuildSource('modrinth')}
                     >
@@ -1093,7 +1364,9 @@ export default function CreateServerWizard() {
                     <button
                       type="button"
                       className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
-                        buildSource === 'curseforge' ? 'bg-base-700 text-base-50' : 'text-base-500 hover:text-base-200'
+                        buildSource === 'curseforge'
+                          ? 'bg-base-700 text-base-50'
+                          : 'text-base-500 hover:text-base-200'
                       }`}
                       onClick={() => setBuildSource('curseforge')}
                     >
@@ -1116,16 +1389,30 @@ export default function CreateServerWizard() {
                   </button>
                 </form>
 
-                {/* Modrinth-only: these map to real Modrinth search parameters, which the CurseForge
-                    scraper has no equivalent for. Each control re-runs the search immediately with
-                    its own new value, so there's no "apply filters" step to forget. */}
+                {/* Modrinth-only: these map to real Modrinth search parameters, which the
+                   CurseForge scraper has no equivalent for. */}
+                {buildSource === 'curseforge' && cfCategories.length > 0 && (
+                  <div className="mb-3 flex flex-wrap items-center gap-2">
+                    <div className="w-44">
+                      <Select
+                        value={cfCategory || ANY_CATEGORY}
+                        onChange={(value) => {
+                          const next = value === ANY_CATEGORY ? '' : value;
+                          setCfCategory(next);
+                          runCfSearch(undefined, next);
+                        }}
+                        options={[
+                          { value: ANY_CATEGORY, label: 'All categories' },
+                          ...cfCategories,
+                        ]}
+                      />
+                    </div>
+                  </div>
+                )}
+
                 {buildSource === 'modrinth' && filterOptions && (
                   <div className="mb-3 flex flex-wrap items-center gap-2">
-                    {/* The app's own Select (Radix-backed) rather than a bare <select> — a native
-                        one renders the OS dropdown, which on Windows is a light-mode list that
-                        looks pasted in from another application.
-                        ANY_CATEGORY is a sentinel because Radix rejects an empty-string item value
-                        (it reserves "" for "nothing selected"), which rendered a blank trigger. */}
+                    {/* The app's own Select (Radix-backed) rather than a bare <select>. */}
                     <div className="w-40">
                       <Select
                         value={category || ANY_CATEGORY}
@@ -1134,7 +1421,10 @@ export default function CreateServerWizard() {
                           setCategory(next);
                           runSearch(undefined, { category: next });
                         }}
-                        options={[{ value: ANY_CATEGORY, label: 'All categories' }, ...filterOptions.categories]}
+                        options={[
+                          { value: ANY_CATEGORY, label: 'All categories' },
+                          ...filterOptions.categories,
+                        ]}
                       />
                     </div>
 
@@ -1166,26 +1456,47 @@ export default function CreateServerWizard() {
                 )}
 
                 {buildSource === 'curseforge' ? (
-                  <motion.div variants={staggerContainer} initial="initial" animate="animate" className="card divide-y divide-base-800">
+                  <motion.div
+                    variants={staggerContainer}
+                    initial="initial"
+                    animate="animate"
+                    className="card divide-y divide-base-800"
+                  >
                     {cfResults.map((hit) => {
-                      // CurseForge publishes no side info; the tag is borrowed from Modrinth by slug
-                      // where that lookup succeeded. Unknown stays unlabelled and stays addable --
-                      // blocking on a guess would hide mods that are perfectly fine on a server.
+                      // CurseForge publishes no side info; the tag is borrowed from Modrinth by
+                      // slug where that lookup succeeded.
                       const clientOnly = hit.serverSide === 'unsupported';
-                      const serverSafe = hit.serverSide === 'required' || hit.serverSide === 'optional';
+                      const serverSafe =
+                        hit.serverSide === 'required' || hit.serverSide === 'optional';
                       return (
-                        <motion.div variants={staggerItem} key={hit.slug} className="flex items-center gap-3 p-3">
+                        <motion.div
+                          variants={staggerItem}
+                          key={hit.slug}
+                          className="flex items-center gap-3 p-3"
+                        >
                           {hit.logoUrl && (
-                            <img src={hit.logoUrl} alt="" className={`h-8 w-8 rounded ${clientOnly ? 'opacity-40' : ''}`} />
+                            <img
+                              src={hit.logoUrl}
+                              alt=""
+                              className={`h-8 w-8 rounded ${clientOnly ? 'opacity-40' : ''}`}
+                            />
                           )}
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5">
-                              <p className={`truncate text-sm ${clientOnly ? 'text-base-500' : 'text-base-100'}`}>{hit.name}</p>
+                              <p
+                                className={`truncate text-sm ${clientOnly ? 'text-base-500' : 'text-base-100'}`}
+                              >
+                                {hit.name}
+                              </p>
                               {clientOnly && (
-                                <span className="shrink-0 rounded bg-base-700 px-1.5 py-0.5 text-[10px] text-base-400">Client-only</span>
+                                <span className="shrink-0 rounded bg-base-700 px-1.5 py-0.5 text-[10px] text-base-400">
+                                  Client-only
+                                </span>
                               )}
                               {serverSafe && (
-                                <span className="shrink-0 rounded bg-accent-500/15 px-1.5 py-0.5 text-[10px] text-accent-400">Server</span>
+                                <span className="shrink-0 rounded bg-accent-500/15 px-1.5 py-0.5 text-[10px] text-accent-400">
+                                  Server
+                                </span>
                               )}
                             </div>
                             <p className="truncate text-xs text-base-500">
@@ -1195,30 +1506,61 @@ export default function CreateServerWizard() {
                           <motion.button
                             whileTap={{ scale: 0.95 }}
                             className="btn-secondary shrink-0 !py-1 !text-xs"
-                            disabled={clientOnly || addedCfSlugs.has(hit.slug) || cfAddingSlug === hit.slug}
-                            title={clientOnly ? 'This mod only works on the Minecraft client, not a dedicated server.' : undefined}
+                            disabled={
+                              clientOnly || addedCfSlugs.has(hit.slug) || cfAddingSlug === hit.slug
+                            }
+                            title={
+                              clientOnly
+                                ? 'This mod only works on the Minecraft client, not a dedicated server.'
+                                : undefined
+                            }
                             onClick={() => addCfMod(hit)}
                           >
-                            {addedCfSlugs.has(hit.slug) ? 'Added' : cfAddingSlug === hit.slug ? '…' : 'Add'}
+                            {addedCfSlugs.has(hit.slug)
+                              ? 'Added'
+                              : cfAddingSlug === hit.slug
+                                ? '…'
+                                : 'Add'}
                           </motion.button>
                         </motion.div>
                       );
                     })}
                     {cfResults.length === 0 && (
-                      <p className="p-6 text-center text-sm text-base-500">Search for mods to add to this pack.</p>
+                      <p className="p-6 text-center text-sm text-base-500">
+                        Search for mods to add to this pack.
+                      </p>
                     )}
                   </motion.div>
                 ) : (
-                  <motion.div variants={staggerContainer} initial="initial" animate="animate" className="card divide-y divide-base-800">
+                  <motion.div
+                    variants={staggerContainer}
+                    initial="initial"
+                    animate="animate"
+                    className="card divide-y divide-base-800"
+                  >
                     {results.map((hit) => {
                       // Marked rather than hidden: seeing "Client only" explains why a mod someone
                       // expected to find isn't addable, which a silently filtered list wouldn't.
                       const clientOnly = hit.server_side === 'unsupported';
                       return (
-                        <motion.div variants={staggerItem} key={hit.project_id} className="flex items-center gap-3 p-3">
-                          {hit.icon_url && <img src={hit.icon_url} alt="" className={`h-8 w-8 rounded ${clientOnly ? 'opacity-40' : ''}`} />}
+                        <motion.div
+                          variants={staggerItem}
+                          key={hit.project_id}
+                          className="flex items-center gap-3 p-3"
+                        >
+                          {hit.icon_url && (
+                            <img
+                              src={hit.icon_url}
+                              alt=""
+                              className={`h-8 w-8 rounded ${clientOnly ? 'opacity-40' : ''}`}
+                            />
+                          )}
                           <div className="min-w-0 flex-1">
-                            <p className={`truncate text-sm ${clientOnly ? 'text-base-500' : 'text-base-100'}`}>{hit.title}</p>
+                            <p
+                              className={`truncate text-sm ${clientOnly ? 'text-base-500' : 'text-base-100'}`}
+                            >
+                              {hit.title}
+                            </p>
                             <p className="truncate text-xs text-base-500">
                               {clientOnly ? "Client-only — can't run on a server" : hit.description}
                             </p>
@@ -1227,26 +1569,47 @@ export default function CreateServerWizard() {
                             whileTap={{ scale: 0.95 }}
                             className="btn-secondary shrink-0 !py-1 !text-xs"
                             disabled={clientOnly || addedProjectIds.has(hit.project_id)}
-                            title={clientOnly ? 'This mod only works on the Minecraft client, not a dedicated server.' : undefined}
+                            title={
+                              clientOnly
+                                ? 'This mod only works on the Minecraft client, not a dedicated server.'
+                                : undefined
+                            }
                             onClick={() => addMod(hit.project_id)}
                           >
-                            {clientOnly ? 'Client only' : addedProjectIds.has(hit.project_id) ? 'Added' : 'Add'}
+                            {clientOnly
+                              ? 'Client only'
+                              : addedProjectIds.has(hit.project_id)
+                                ? 'Added'
+                                : 'Add'}
                           </motion.button>
                         </motion.div>
                       );
                     })}
                     {results.length === 0 && (
-                      <p className="p-6 text-center text-sm text-base-500">Search for mods to add to this pack.</p>
+                      <p className="p-6 text-center text-sm text-base-500">
+                        Search for mods to add to this pack.
+                      </p>
                     )}
                   </motion.div>
                 )}
               </div>
 
               <div>
-                <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-base-500">In this pack</h2>
-                <motion.div variants={staggerContainer} initial="initial" animate="animate" className="card divide-y divide-base-800">
+                <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-base-500">
+                  In this pack
+                </h2>
+                <motion.div
+                  variants={staggerContainer}
+                  initial="initial"
+                  animate="animate"
+                  className="card divide-y divide-base-800"
+                >
                   {pack.items.map((item) => (
-                    <motion.div variants={staggerItem} key={item.id} className="flex items-center justify-between p-3">
+                    <motion.div
+                      variants={staggerItem}
+                      key={item.id}
+                      className="flex items-center justify-between p-3"
+                    >
                       <div>
                         <p className="text-sm text-base-100">{item.projectName}</p>
                         <p className="text-xs text-base-500">
@@ -1256,7 +1619,9 @@ export default function CreateServerWizard() {
                       </div>
                     </motion.div>
                   ))}
-                  {pack.items.length === 0 && <p className="p-6 text-center text-sm text-base-500">No mods added yet.</p>}
+                  {pack.items.length === 0 && (
+                    <p className="p-6 text-center text-sm text-base-500">No mods added yet.</p>
+                  )}
                 </motion.div>
               </div>
             </div>
@@ -1264,8 +1629,17 @@ export default function CreateServerWizard() {
         )}
 
         {step === 'deploy' && pack && (
-          <motion.div key="deploy" variants={pageVariants} initial="initial" animate="animate" exit="exit">
-            <BackLink onClick={() => setStep(game?.moddable ? 'modded-choice' : 'games')} label="Back" />
+          <motion.div
+            key="deploy"
+            variants={pageVariants}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+          >
+            <BackLink
+              onClick={() => setStep(game?.moddable ? 'modded-choice' : 'games')}
+              label="Back"
+            />
             <h1 className="mb-1 text-2xl font-semibold text-base-50">Deploy</h1>
             <p className="mb-8 text-sm text-base-500">
               {pack.name} · {pack.mcVersion} · {pack.loader} · {pack.items.length} mods
@@ -1274,7 +1648,8 @@ export default function CreateServerWizard() {
             {unresolved.length > 0 && (
               <div className="card mb-6 border-ember-500/30 bg-ember-500/5 p-5">
                 <p className="mb-2 text-sm font-medium text-ember-400">
-                  {unresolved.length} mod{unresolved.length === 1 ? '' : 's'} couldn't be matched automatically
+                  {unresolved.length} mod{unresolved.length === 1 ? '' : 's'} couldn't be matched
+                  automatically
                 </p>
                 <ul className="space-y-1 text-xs text-base-500">
                   {unresolved.map((u, i) => (
@@ -1289,10 +1664,12 @@ export default function CreateServerWizard() {
             {clientOnly.length > 0 && (
               <div className="card mb-6 border-base-600/50 bg-base-800/40 p-5">
                 <p className="mb-2 text-sm font-medium text-base-300">
-                  {clientOnly.length} client-only mod{clientOnly.length === 1 ? '' : 's'} left out automatically
+                  {clientOnly.length} client-only mod{clientOnly.length === 1 ? '' : 's'} left out
+                  automatically
                 </p>
                 <p className="mb-2 text-xs text-base-500">
-                  These don't run on a dedicated server (shaders, cosmetics, UI mods, etc.) — players keep them on their own client as normal.
+                  These don't run on a dedicated server (shaders, cosmetics, UI mods, etc.) —
+                  players keep them on their own client as normal.
                 </p>
                 <ul className="space-y-1 text-xs text-base-500">
                   {clientOnly.map((u, i) => (
@@ -1321,7 +1698,7 @@ export default function CreateServerWizard() {
               <div>
                 <label className="label" htmlFor="deploy-motd">
                   MOTD <span className="normal-case text-base-500">(optional)</span>
-                    <InfoTip text="Message of the Day — the line of text shown in the multiplayer server list under your server's name, before anyone joins. Supports Minecraft color codes (&a, &l, etc.)." />
+                  <InfoTip text="Message of the Day — the line of text shown in the multiplayer server list under your server's name, before anyone joins. Supports Minecraft color codes (&a, &l, etc.)." />
                 </label>
                 <input
                   id="deploy-motd"
@@ -1362,13 +1739,24 @@ function formatMb(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(0)}MB`;
 }
 
-function describeImportProgress(status: ImportJobStatus): { label: string; percent: number | null; determinate: boolean } {
+function describeImportProgress(status: ImportJobStatus): {
+  label: string;
+  percent: number | null;
+  determinate: boolean;
+} {
   switch (status.phase) {
     case 'resolving':
-      return { label: "Finding this pack's download link on CurseForge…", percent: null, determinate: false };
+      return {
+        label: "Finding this pack's download link on CurseForge…",
+        percent: null,
+        determinate: false,
+      };
     case 'downloading': {
       const percent = status.total > 0 ? Math.round((status.current / status.total) * 100) : null;
-      const sizes = status.total > 0 ? ` (${formatMb(status.current)} / ${formatMb(status.total)})` : ` (${formatMb(status.current)})`;
+      const sizes =
+        status.total > 0
+          ? ` (${formatMb(status.current)} / ${formatMb(status.total)})`
+          : ` (${formatMb(status.current)})`;
       return { label: `Downloading modpack${sizes}…`, percent, determinate: percent !== null };
     }
     case 'matching': {
@@ -1405,8 +1793,23 @@ function BackLink({ onClick, label = 'All games' }: { onClick: () => void; label
   );
 }
 
-function MemoryPicker({ value, onChange, hostMemoryMb }: { value: number; onChange: (v: number) => void; hostMemoryMb?: number }) {
-  // Ceiling comes from the host's real RAM rather than a fixed 8GB, which was both arbitrary and
-  // inconsistent with the Settings tab's own slider.
-  return <MemorySlider value={value} onChange={onChange} min={1024} max={maxMemoryMb(hostMemoryMb)} step={512} />;
+function MemoryPicker({
+  value,
+  onChange,
+  hostMemoryMb,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  hostMemoryMb?: number;
+}) {
+  // Ceiling comes from the host's actual RAM, matching the Settings tab's slider.
+  return (
+    <MemorySlider
+      value={value}
+      onChange={onChange}
+      min={1024}
+      max={maxMemoryMb(hostMemoryMb)}
+      step={512}
+    />
+  );
 }

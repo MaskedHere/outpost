@@ -1,21 +1,18 @@
-# Outpost — self-hosted game server panel
+# Outpost - self-hosted game server panel
 #
-# This file targets ZimaOS/CasaOS's "Install a customized app" flow (compose import) and, with
-# the x-casaos block filled in, the community App Store submission format. The x-casaos schema
-# below is a best-effort reproduction from public CasaOS app-store examples — verify it against
-# the current ZimaOS App Store submission docs before actually submitting it there (see
-# docs/ZIMAOS_INSTALL.md).
+# Import this through ZimaOS/CasaOS "Install a customized app", or run it with `docker compose up -d`
+# on any Docker host. See docs/ZIMAOS_INSTALL.md.
 #
-# SECURITY NOTE: this mounts the host's Docker socket so Outpost can create/manage game-server
-# containers. That gives the Outpost container root-equivalent power on the host, the same
-# trust model as Portainer/Watchtower. Only run this on a NAS you control, and make sure you
-# complete the admin setup screen the first time you open it — there is no anonymous access.
+# SECURITY: Outpost mounts the host's Docker socket so it can manage game-server containers, which
+# gives it root-equivalent access to the host (the same trust model as Portainer). Only run it on a
+# machine you control, keep it off the public internet, and finish the admin setup screen on first
+# launch.
 
 name: outpost
 
 services:
   outpost:
-    image: ghcr.io/outpost-panel/outpost:latest
+    image: ghcr.io/maskedhere/outpost:latest
     container_name: outpost
     restart: unless-stopped
     network_mode: bridge
@@ -26,28 +23,23 @@ services:
         published: "7420"
         protocol: tcp
     environment:
-      # REQUIRED — Outpost refuses to start in production until this is changed. Generate one with
+      # REQUIRED: Outpost refuses to start while this is a placeholder. Generate one with
       # `openssl rand -hex 32`. Anyone who knows this value can forge an admin session.
       - JWT_SECRET=please-change-this-to-a-long-random-string
-      # First host port handed out to game servers; each new server takes the next free one above it.
-      # Whatever range you expect to use has to be reachable from outside if you want friends to join
-      # without a tunnel (see the Public access tab for the no-port-forwarding options).
+      # First host port handed out to game servers; each new server takes the next free port above
+      # it. Forward this range on your router if friends should join without a tunnel.
       - MC_PORT_RANGE_START=25565
-      # Game-server RCON ports are published on the *host*, not inside this container.
+      # Game-server RCON ports are published on the host, not inside this container.
       - RCON_HOST=host.docker.internal
-      # REQUIRED, and must match the host side of the /data bind mount below. Outpost creates game
-      # containers through the host's Docker socket, and the daemon resolves bind-mount sources on
-      # the host — so it needs the host path, not Outpost's own /data. Without this, creating a
-      # server fails with `mkdir /data: read-only file system`.
+      # REQUIRED: must match the host side of the /data bind mount below. Game containers are created
+      # through the host's Docker daemon, which resolves bind-mount sources on the host.
       - HOST_DATA_DIR=/DATA/AppData/outpost
     volumes:
       - type: bind
         source: /var/run/docker.sock
         target: /var/run/docker.sock
-      # Everything Outpost owns lives here: the SQLite database, each server's files, backups, and
-      # the shared per-game content cache. The cache alone can reach tens of GB across games (7 Days
-      # to Die is ~14GB on its own), so point this at a volume with room — and back it up if the
-      # worlds matter to you.
+      # Database, server files, backups, and the shared game cache. The cache can reach tens of GB
+      # (7 Days to Die alone is ~14GB), so point this at a volume with room and back it up.
       - type: bind
         source: /DATA/AppData/outpost
         target: /data
@@ -60,7 +52,9 @@ services:
         en_us: Self-hosted game server panel with a built-in Minecraft modpack studio. Spin up vanilla/Paper/Fabric/Forge servers, build modpacks from Modrinth, and share a client pack with friends in one click.
       tagline:
         en_us: Host game nights with your friends. No monthly fee.
-      icon: https://raw.githubusercontent.com/outpost-panel/outpost/main/packaging/icon.png
+      # Served by Outpost itself. Replace the host with the address you open Outpost on; ZimaOS
+      # loads it from your browser, so a LAN address works.
+      icon: http://outpost.local:7420/icon.svg
       thumbnail: ""
       title:
         en_us: Outpost
@@ -68,6 +62,6 @@ services:
       port_map: "7420"
       index: /
       scheme: http
-      developer: outpost-panel
-      author: outpost-panel
+      developer: MaskedHere
+      author: Lamar Nielsen
       web_ui: true

@@ -11,20 +11,25 @@ import {
   getProjectVersions,
   getVersion,
   getProject,
+  getProjects,
   getGameVersions,
   type ModrinthSortIndex,
 } from '../modrinth/client.js';
 import { resolveDependencies } from '../modrinth/dependencies.js';
 import { resolveLoaderVersion } from '../modrinth/loaderVersions.js';
 import { buildMrpack } from '../modrinth/mrpack.js';
-import { importPack, ImportError, type ImportedItem, type ImportResult } from '../modrinth/import.js';
+import {
+  importPack,
+  ImportError,
+  type ImportedItem,
+  type ImportResult,
+} from '../modrinth/import.js';
 import { createServer, ServerCreationError } from '../services/serverService.js';
 
-const USER_AGENT = 'outpost-panel/0.1.0 (https://github.com/outpost-panel/outpost)';
+const USER_AGENT = 'MaskedHere/outpost (https://github.com/MaskedHere/outpost)';
 
-// Modrinth's real category slugs (their /tag/category list), trimmed to the ones that are actually
-// useful when building a server pack — the full list runs to dozens and is mostly client-side
-// cosmetic tags that would never belong here.
+// Modrinth's real category slugs (their /tag/category list), trimmed to the ones that are useful
+// when building a server pack.
 const MOD_CATEGORIES: { value: string; label: string }[] = [
   { value: 'adventure', label: 'Adventure' },
   { value: 'technology', label: 'Technology' },
@@ -72,7 +77,7 @@ const deploySchema = z.object({
 export async function modpackRoutes(app: FastifyInstance) {
   app.addHook('preHandler', requireAuth);
 
-  // Cached in memory — this list changes only when Mojang ships a new version, no need to hit
+  // Cached in memory - this list changes only when Mojang ships a new version, no need to hit
   // Modrinth on every page load of the server creation wizard.
   let gameVersionsCache: { at: number; versions: string[] } | null = null;
   app.get('/api/modrinth/game-versions', async () => {
@@ -98,7 +103,9 @@ export async function modpackRoutes(app: FastifyInstance) {
     if (!query.mcVersion || !query.loader) {
       return reply.code(400).send({ error: 'mcVersion and loader are required' });
     }
-    const sort = SORT_OPTIONS.includes(query.sort as ModrinthSortIndex) ? (query.sort as ModrinthSortIndex) : 'relevance';
+    const sort = SORT_OPTIONS.includes(query.sort as ModrinthSortIndex)
+      ? (query.sort as ModrinthSortIndex)
+      : 'relevance';
     return searchMods({
       query: query.q ?? '',
       mcVersion: query.mcVersion,
@@ -110,10 +117,11 @@ export async function modpackRoutes(app: FastifyInstance) {
     });
   });
 
-  /** The category slugs Outpost offers, and the labels the UI shows for them. Deliberately a
-   *  curated subset of Modrinth's full tag list — the complete set is long and mostly noise for
-   *  someone assembling a server pack. */
-  app.get('/api/modrinth/filters', async () => ({ categories: MOD_CATEGORIES, sorts: SORT_LABELS }));
+  /** The category slugs Outpost offers, and the labels the UI shows for them. */
+  app.get('/api/modrinth/filters', async () => ({
+    categories: MOD_CATEGORIES,
+    sorts: SORT_LABELS,
+  }));
 
   app.get('/api/modrinth/projects/:projectId/versions', async (request, reply) => {
     const { projectId } = request.params as { projectId: string };
@@ -175,14 +183,16 @@ export async function modpackRoutes(app: FastifyInstance) {
     });
     if ('error' in created) return reply.code(400).send(created);
 
-    return reply.code(201).send({ pack: created.pack, format: result.format, unresolved: result.unresolved, clientOnly: result.clientOnly });
+    return reply.code(201).send({
+      pack: created.pack,
+      format: result.format,
+      unresolved: result.unresolved,
+      clientOnly: result.clientOnly,
+    });
   });
 
   // Imports an uploaded .mrpack/CurseForge zip/jars zip INTO an already-existing pack, instead of
-  // creating a new one — e.g. "I already built this pack in Outpost, but here's an updated
-  // modpack.zip I want to bring in." `replace: true` clears the pack first; otherwise the import
-  // is merged in, skipping anything already in the pack (a mod present in both stays whatever
-  // version it already was, not silently overwritten by the import's pin).
+  // creating a new one.
   app.post('/api/packs/:id/import', async (request, reply) => {
     const { id } = request.params as { id: string };
     const existing = await prisma.pack.findUnique({ where: { id }, include: { items: true } });
@@ -208,43 +218,49 @@ export async function modpackRoutes(app: FastifyInstance) {
       return reply.code(500).send({ error: 'Failed to read the uploaded pack' });
     }
 
-    // Refuse rather than silently mixing in mods for a different Minecraft version/loader than
-    // this pack already targets — a bare jars zip has neither, so only checks when the import
-    // itself actually declares one.
+    // Refuse rather than silently mixing in mods for a different Minecraft version/loader than this
+    // pack already targets.
     if (result.mcVersion && result.mcVersion !== existing.mcVersion) {
-      return reply.code(400).send({ error: `This pack is for Minecraft ${existing.mcVersion}, but the import is for ${result.mcVersion}` });
+      return reply.code(400).send({
+        error: `This pack is for Minecraft ${existing.mcVersion}, but the import is for ${result.mcVersion}`,
+      });
     }
     if (result.loader && result.loader !== existing.loader) {
-      return reply.code(400).send({ error: `This pack uses ${existing.loader}, but the import is for ${result.loader}` });
+      return reply.code(400).send({
+        error: `This pack uses ${existing.loader}, but the import is for ${result.loader}`,
+      });
     }
 
     if (replace) {
       await prisma.packItem.deleteMany({ where: { packId: id } });
     }
 
-    // Keyed on filename rather than projectId now — local items (no Modrinth project at all) need
-    // a dedup key too, and it's the pack's actual unique constraint (@@unique([packId, filename])).
-    const keepFilenames = replace ? new Set<string>() : new Set(existing.items.map((item) => item.filename));
+    // Keyed on filename, the pack's unique constraint, since local items have no Modrinth project
+    // id.
+    const keepFilenames = replace
+      ? new Set<string>()
+      : new Set(existing.items.map((item) => item.filename));
     const toCreate = result.matched.filter((item) => !keepFilenames.has(item.filename));
 
     await persistPackItems(id, toCreate);
 
     const updated = await prisma.pack.findUnique({ where: { id }, include: { items: true } });
-    return { pack: updated, format: result.format, unresolved: result.unresolved, clientOnly: result.clientOnly };
+    return {
+      pack: updated,
+      format: result.format,
+      unresolved: result.unresolved,
+      clientOnly: result.clientOnly,
+    };
   });
 
-  // Search Modrinth's own pre-made modpacks (a project_type distinct from individual mods) —
-  // lets the server wizard offer "browse an existing pack" alongside import/build-from-scratch.
-  // CurseForge doesn't have an equivalent here: their search API is gated behind a developer key
-  // Outpost doesn't have, so CurseForge packs stay import-only (upload the zip you already have).
-  // mcVersion/loader are optional filters, not requirements. Forcing them hid almost every real
-  // modpack: the wizard defaults to the newest Minecraft version, while the big packs people
-  // actually search for track an older one (All the Mods 10 is 1.21.1/NeoForge), so a default search
-  // returned nothing but obscure packs that happened to match. A pack carries its own version and
-  // loader, and importing one adopts them — so there's no reason to filter the catalogue by whatever
-  // the wizard happened to be preset to.
+  // Search Modrinth's own pre-made modpacks (a project_type distinct from individual mods)
   app.get('/api/modrinth/modpacks', async (request) => {
-    const query = request.query as { q?: string; mcVersion?: string; loader?: string; offset?: string };
+    const query = request.query as {
+      q?: string;
+      mcVersion?: string;
+      loader?: string;
+      offset?: string;
+    };
     return searchModpacks({
       query: query.q ?? '',
       mcVersion: query.mcVersion || undefined,
@@ -254,27 +270,29 @@ export async function modpackRoutes(app: FastifyInstance) {
   });
 
   // Downloads a Modrinth modpack project's own .mrpack (its "primary file", same as what a user
-  // would get clicking Download on the project page) and imports it through the same pipeline as
-  // an uploaded file — reuses all the existing resolution logic, just skips the manual download step.
+  // would get clicking Download on the project page) and imports it through the same pipeline as an
+  // uploaded file.
   app.post('/api/modrinth/modpacks/:projectId/import', async (request, reply) => {
     const { projectId } = request.params as { projectId: string };
     const body = (request.body ?? {}) as { mcVersion?: string; loader?: string };
 
     // Prefer a build matching what the wizard is currently set to, but fall back to the pack's own
-    // latest release rather than refusing. Browsing is no longer version-filtered (see the search
-    // route above), so most packs someone picks won't match the preset — and the pack dictates its
-    // own Minecraft version and loader anyway, which createPackFromImportResult reads back out of
-    // the downloaded file.
-    const preferred = await getProjectVersions(projectId, { mcVersion: body.mcVersion, loader: body.loader });
+    // latest release rather than refusing.
+    const preferred = await getProjectVersions(projectId, {
+      mcVersion: body.mcVersion,
+      loader: body.loader,
+    });
     const version = preferred[0] ?? (await getProjectVersions(projectId))[0];
     if (!version) {
       return reply.code(404).send({ error: 'This modpack has no downloadable versions' });
     }
     const file = version.files.find((f) => f.primary) ?? version.files[0];
-    if (!file) return reply.code(404).send({ error: 'This modpack version has no downloadable file' });
+    if (!file)
+      return reply.code(404).send({ error: 'This modpack version has no downloadable file' });
 
     const fileRes = await fetch(file.url, { headers: { 'User-Agent': USER_AGENT } });
-    if (!fileRes.ok) return reply.code(502).send({ error: 'Failed to download modpack from Modrinth' });
+    if (!fileRes.ok)
+      return reply.code(502).send({ error: 'Failed to download modpack from Modrinth' });
     const buffer = Buffer.from(await fileRes.arrayBuffer());
 
     let result: ImportResult;
@@ -287,17 +305,28 @@ export async function modpackRoutes(app: FastifyInstance) {
     }
 
     const project = await getProjectFromVersion(projectId, version.name);
-    const created = await createPackFromImportResult(result, project.title, {
-      mcVersion: body.mcVersion,
-      loader: body.loader,
-    });
+    const created = await createPackFromImportResult(
+      result,
+      project.title,
+      { mcVersion: body.mcVersion, loader: body.loader },
+      // Recorded so this pack can later be checked against Modrinth for a newer release.
+      { projectId, versionId: version.id, versionNumber: version.version_number },
+    );
     if ('error' in created) return reply.code(400).send(created);
 
-    return reply.code(201).send({ pack: created.pack, format: result.format, unresolved: result.unresolved, clientOnly: result.clientOnly });
+    return reply.code(201).send({
+      pack: created.pack,
+      format: result.format,
+      unresolved: result.unresolved,
+      clientOnly: result.clientOnly,
+    });
   });
 
   app.get('/api/packs/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
+    // Backfills icons for packs created before PackItem.iconUrl existed, writing the result back so
+    // it only happens once per pack.
+    await backfillPackItemIcons(id).catch(() => undefined);
     const pack = await prisma.pack.findUnique({
       where: { id },
       include: { items: true, servers: { select: { id: true, name: true } } },
@@ -306,11 +335,99 @@ export async function modpackRoutes(app: FastifyInstance) {
     return pack;
   });
 
+  /** Reports whether the Modrinth project this pack came from has published something newer. */
+  app.get('/api/packs/:id/update', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const pack = await prisma.pack.findUnique({ where: { id } });
+    if (!pack) return reply.code(404).send({ error: 'Pack not found' });
+    if (!pack.modrinthProjectId) return { trackable: false as const };
+
+    try {
+      // Pinned to the pack's Minecraft version and loader; the newest release often targets a
+      // different Minecraft version and would break existing servers.
+      const versions = await getProjectVersions(pack.modrinthProjectId, {
+        mcVersion: pack.mcVersion,
+        loader: pack.loader,
+      });
+      const latest = versions[0];
+      if (!latest)
+        return { trackable: true as const, available: false, current: pack.modrinthVersionNumber };
+      return {
+        trackable: true as const,
+        available: latest.id !== pack.modrinthVersionId,
+        current: pack.modrinthVersionNumber,
+        latest: latest.version_number,
+        latestVersionId: latest.id,
+      };
+    } catch (err) {
+      app.log.error(err);
+      return reply.code(502).send({ error: "Couldn't reach Modrinth to check for updates" });
+    }
+  });
+
+  /** Moves the pack onto the newest Modrinth release of the same project. */
+  app.post('/api/packs/:id/update', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const pack = await prisma.pack.findUnique({ where: { id } });
+    if (!pack) return reply.code(404).send({ error: 'Pack not found' });
+    if (!pack.modrinthProjectId) {
+      return reply.code(400).send({
+        error: 'This pack did not come from Modrinth, so there is nothing to update from.',
+      });
+    }
+
+    const versions = await getProjectVersions(pack.modrinthProjectId, {
+      mcVersion: pack.mcVersion,
+      loader: pack.loader,
+    }).catch(() => []);
+    const latest = versions[0];
+    if (!latest) return reply.code(404).send({ error: 'No matching versions found on Modrinth' });
+    if (latest.id === pack.modrinthVersionId) {
+      return reply.code(409).send({ error: 'This pack is already on the newest version' });
+    }
+
+    const file = latest.files.find((f) => f.primary) ?? latest.files[0];
+    if (!file) return reply.code(404).send({ error: 'That version has no downloadable file' });
+
+    const fileRes = await fetch(file.url, { headers: { 'User-Agent': USER_AGENT } });
+    if (!fileRes.ok)
+      return reply.code(502).send({ error: 'Failed to download the update from Modrinth' });
+
+    let result: ImportResult;
+    try {
+      result = await importPack(Buffer.from(await fileRes.arrayBuffer()));
+    } catch (err) {
+      if (err instanceof ImportError) return reply.code(400).send({ error: err.message });
+      app.log.error(err);
+      return reply.code(500).send({ error: 'Failed to read the updated modpack' });
+    }
+
+    // Everything the old version wrote to disk goes with it.
+    await prisma.packItem.deleteMany({ where: { packId: id } });
+    await fs
+      .rm(path.join(config.packsDir, id), { recursive: true, force: true })
+      .catch(() => undefined);
+
+    await persistPackItems(id, result.matched);
+    await persistOverrideFiles(id, result.overrideFiles);
+    await prisma.pack.update({
+      where: { id },
+      data: { modrinthVersionId: latest.id, modrinthVersionNumber: latest.version_number },
+    });
+
+    const updated = await prisma.pack.findUnique({ where: { id }, include: { items: true } });
+    return {
+      pack: updated,
+      version: latest.version_number,
+      unresolved: result.unresolved,
+      clientOnly: result.clientOnly,
+    };
+  });
+
   app.delete('/api/packs/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
     await prisma.pack.delete({ where: { id } }).catch(() => null);
-    // Prisma's cascade only covers the PackItem rows — the locally-stored jar files (if any) live
-    // on disk under config.packsDir and need cleaning up separately.
+    // Prisma's cascade only covers the PackItem rows.
     await fs.rm(path.join(config.packsDir, id), { recursive: true, force: true });
     return reply.send({ ok: true });
   });
@@ -343,12 +460,8 @@ export async function modpackRoutes(app: FastifyInstance) {
       }
     }
 
-    // Modrinth curates a server_side flag per project, and "unsupported" means the mod genuinely
-    // cannot run headless. Installing one anyway doesn't degrade gracefully — it hard-crashes the
-    // server on boot before the world ever loads (Sodium, for instance, dies on
-    // NoClassDefFoundError: org/lwjgl/Version, since LWJGL is client-only OpenGL glue). Every other
-    // path into a pack already screens for this (see import.ts's classifyJarsByHash and the
-    // CurseForge add route); this one didn't, which is how a client-only mod reached a live server.
+    // Modrinth curates a server_side flag per project, and "unsupported" means the mod cannot run
+    // headless.
     const project = await getProject(version.project_id).catch(() => null);
     if (project?.server_side === 'unsupported') {
       return reply.code(400).send({
@@ -356,24 +469,34 @@ export async function modpackRoutes(app: FastifyInstance) {
       });
     }
 
-    const existingProjectIds = new Set(pack.items.map((item) => item.projectId).filter((id): id is string => id !== null));
+    const existingProjectIds = new Set(
+      pack.items.map((item) => item.projectId).filter((id): id is string => id !== null),
+    );
     const dependencyVersions = existingProjectIds.has(version.project_id)
       ? []
-      : await resolveDependencies(version, pack.mcVersion, pack.loader, new Set(existingProjectIds));
+      : await resolveDependencies(
+          version,
+          pack.mcVersion,
+          pack.loader,
+          new Set(existingProjectIds),
+        );
 
     const toInsert = [
       { version, isDependency: false },
       ...dependencyVersions
         .filter((v) => !existingProjectIds.has(v.project_id))
         .map((v) => ({ version: v, isDependency: true })),
-    ].filter((entry, index, arr) => arr.findIndex((e) => e.version.project_id === entry.version.project_id) === index);
+    ].filter(
+      (entry, index, arr) =>
+        arr.findIndex((e) => e.version.project_id === entry.version.project_id) === index,
+    );
 
     for (const entry of toInsert) {
       const primaryFile = entry.version.files.find((f) => f.primary) ?? entry.version.files[0];
       if (!primaryFile) continue;
       const project = await getProjectFromVersion(entry.version.project_id, entry.version.name);
-      // A client-only *dependency* is skipped rather than rejected: the mod the user actually asked
-      // for still installs and runs, it just doesn't drag in something that would crash the server.
+      // A client-only dependency is skipped rather than rejected, so the requested mod still
+      // installs without pulling in something that would crash the server.
       if (entry.isDependency && project.server_side === 'unsupported') continue;
 
       await prisma.packItem.upsert({
@@ -384,6 +507,7 @@ export async function modpackRoutes(app: FastifyInstance) {
           projectId: entry.version.project_id,
           projectSlug: project.slug,
           projectName: project.title,
+          iconUrl: project.icon_url,
           versionId: entry.version.id,
           versionNumber: entry.version.version_number,
           filename: primaryFile.filename,
@@ -458,12 +582,36 @@ export async function modpackRoutes(app: FastifyInstance) {
   });
 }
 
+/** Chunk the ids so a large pack doesn't produce an oversized URL. */
+const ICON_BACKFILL_CHUNK = 100;
+
+/** Fills in missing PackItem.iconUrl from Modrinth. */
+async function backfillPackItemIcons(packId: string): Promise<void> {
+  const missing = await prisma.packItem.findMany({
+    where: { packId, iconUrl: null, projectId: { not: null } },
+    select: { projectId: true },
+  });
+  if (missing.length === 0) return;
+
+  const ids = [...new Set(missing.map((m) => m.projectId!))];
+  for (let i = 0; i < ids.length; i += ICON_BACKFILL_CHUNK) {
+    const projects = await getProjects(ids.slice(i, i + ICON_BACKFILL_CHUNK)).catch(() => []);
+    for (const project of projects) {
+      if (!project.icon_url) continue;
+      await prisma.packItem.updateMany({
+        where: { packId, projectId: project.id },
+        data: { iconUrl: project.icon_url },
+      });
+    }
+  }
+}
+
 async function getProjectFromVersion(projectId: string, fallbackName: string) {
   try {
     return await getProject(projectId);
   } catch {
-    // Unknown side support — assume it's installable rather than silently dropping a mod we simply
-    // couldn't look up, matching projectMeta's behaviour in import.ts.
+    // Unknown side support: assume installable rather than dropping the mod (matches projectMeta in
+    // import.ts).
     return {
       id: projectId,
       slug: projectId,
@@ -475,18 +623,20 @@ async function getProjectFromVersion(projectId: string, fallbackName: string) {
   }
 }
 
-/** Shared by the zip-upload import and the "browse existing Modrinth packs" import — both end up
- *  with the same ImportResult shape and need the same fallback-field/validation handling. */
+/** Shared by the zip-upload import and the "browse existing Modrinth packs" import. */
 export async function createPackFromImportResult(
   result: ImportResult,
   fallbackName: string,
   overrides: { mcVersion?: string; loader?: string },
+  /** Only passed when the pack came from a Modrinth project. */
+  source?: { projectId: string; versionId: string; versionNumber: string },
 ) {
   const mcVersion = result.mcVersion ?? overrides.mcVersion;
   const loader = result.loader ?? overrides.loader;
   if (!mcVersion || !loader) {
     return {
-      error: "Couldn't detect a Minecraft version/loader from this pack — specify them and try again.",
+      error:
+        "Couldn't detect a Minecraft version/loader from this pack — specify them and try again.",
       format: result.format,
     };
   }
@@ -496,19 +646,34 @@ export async function createPackFromImportResult(
 
   const name = (result.suggestedName || fallbackName || 'Imported pack').slice(0, 64);
 
-  const pack = await prisma.pack.create({ data: { name, mcVersion, loader } });
+  const pack = await prisma.pack.create({
+    data: {
+      name,
+      mcVersion,
+      loader,
+      modrinthProjectId: source?.projectId ?? null,
+      modrinthVersionId: source?.versionId ?? null,
+      modrinthVersionNumber: source?.versionNumber ?? null,
+    },
+  });
   await persistPackItems(pack.id, result.matched);
   await persistOverrideFiles(pack.id, result.overrideFiles);
 
-  const withItems = await prisma.pack.findUnique({ where: { id: pack.id }, include: { items: true } });
+  const withItems = await prisma.pack.findUnique({
+    where: { id: pack.id },
+    include: { items: true },
+  });
   return { pack: withItems! };
 }
 
-/** Writes a CurseForge pack's non-mod overrides/ files (configs, resourcepacks, scripts) to disk
- *  under config.packsDir/<packId>/overrides/ — mirrored as-is into the deployed server's dataPath
- *  at create time (see serverService.ts's copyPackOverrides). No DB row needed: deploy just checks
- *  whether this directory exists. */
-async function persistOverrideFiles(packId: string, files: { path: string; buffer: Buffer }[] | undefined) {
+/**
+ * Writes a CurseForge pack's non-mod overrides/ files (configs, resourcepacks, scripts) to disk
+ * under config.packsDir/<packId>/overrides/.
+ */
+async function persistOverrideFiles(
+  packId: string,
+  files: { path: string; buffer: Buffer }[] | undefined,
+) {
   if (!files || files.length === 0) return;
   const overridesDir = path.join(config.packsDir, packId, 'overrides');
   for (const file of files) {
@@ -518,12 +683,10 @@ async function persistOverrideFiles(packId: string, files: { path: string; buffe
   }
 }
 
-/** Writes any items whose actual bytes we already have to disk under config.packsDir (only
- *  possible once the pack's id is known, hence this runs after pack creation rather than as a
- *  nested `create`), then inserts all of this batch's PackItem rows in one go. This includes
- *  source: 'modrinth' items too — a CurseForge-embedded jar that happened to hash-match a Modrinth
- *  project still deploys from the bytes already in hand rather than re-fetching that same file from
- *  Modrinth's CDN (see ImportedItem.fileBuffer and serverService.ts's copyLocalPackItems). */
+/**
+ * Writes items whose bytes are already in hand to config.packsDir (needs the pack id, so this runs
+ * after creation), then inserts the batch's PackItem rows in one call.
+ */
 export async function persistPackItems(packId: string, items: ImportedItem[]) {
   if (items.length === 0) return;
   const packDir = path.join(config.packsDir, packId);
@@ -542,6 +705,7 @@ export async function persistPackItems(packId: string, items: ImportedItem[]) {
         projectId: item.projectId,
         projectSlug: item.projectSlug,
         projectName: item.projectName,
+        iconUrl: item.iconUrl ?? null,
         versionId: item.versionId,
         versionNumber: item.versionNumber,
         localFilePath,

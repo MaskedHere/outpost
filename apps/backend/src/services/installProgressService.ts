@@ -1,12 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-/** Recursively sums file sizes under a directory — used to show a live-growing "downloaded so
- *  far" number while a modded server's loader/mods are still installing (see
- *  readinessService.ts's 'installing' state), since dataPath is the same bind mount the game
- *  container writes into, so Outpost can just read it directly with no docker exec involved.
- *  Missing/unreadable entries are skipped rather than failing the whole walk — a file can
- *  legitimately disappear mid-walk if it's still being written. */
+/** Recursively sums file sizes under a directory. */
 export async function getDirectorySizeBytes(dirPath: string): Promise<number> {
   let entries: import('node:fs').Dirent[];
   try {

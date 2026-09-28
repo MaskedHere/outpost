@@ -2,22 +2,43 @@ import { FormEvent, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { FaArrowLeft } from 'react-icons/fa';
-import { authApi, settingsApi, gameCacheApi, type PanelSettings, type CachedGame } from '../lib/api';
+import {
+  authApi,
+  settingsApi,
+  gameCacheApi,
+  gamesApi,
+  storageApi,
+  type PanelSettings,
+  type CachedGame,
+  type GameDef,
+  type OrphanDir,
+} from '../lib/api';
 import { useAuth } from '../lib/AuthContext';
 import MemorySlider, { maxMemoryMb } from '../components/MemorySlider';
+import Select from '../components/Select';
 import Skeleton from '../components/Skeleton';
 import { pageVariants } from '../lib/motion';
 import { readPreference, writePreference, type EffectsPreference } from '../lib/visualEffects';
 
 export default function SettingsPage() {
   return (
-    <motion.div variants={pageVariants} initial="initial" animate="animate" className="mx-auto max-w-2xl px-8 py-10">
-      <Link to="/" className="mb-4 inline-flex items-center gap-1.5 text-sm text-base-500 hover:text-accent-400">
+    <motion.div
+      variants={pageVariants}
+      initial="initial"
+      animate="animate"
+      className="mx-auto max-w-2xl px-8 py-10"
+    >
+      <Link
+        to="/"
+        className="mb-4 inline-flex items-center gap-1.5 text-sm text-base-500 hover:text-accent-400"
+      >
         <FaArrowLeft className="h-3.5 w-3.5" />
         Back to servers
       </Link>
       <h1 className="mb-1 text-2xl font-semibold text-base-50">Settings</h1>
-      <p className="mb-6 text-sm text-base-500">Panel-wide preferences — not tied to any one server.</p>
+      <p className="mb-6 text-sm text-base-500">
+        Panel-wide preferences — not tied to any one server.
+      </p>
 
       <div className="space-y-6">
         <AccountSection />
@@ -25,20 +46,13 @@ export default function SettingsPage() {
         <PublicAccessDefaults />
         <ServerDefaults />
         <GameFileCache />
+        <OrphanedData />
       </div>
     </motion.div>
   );
 }
 
-
-/**
- * Ambient background effects.
- *
- * Auto measures the real frame rate on load and drops the animation if the machine cannot keep up,
- * which is the common case when a user has disabled hardware acceleration in their browser. The
- * explicit settings exist because auto-detection guesses, and someone who knows their own machine
- * should not have to argue with it.
- */
+/** Ambient background effects. */
 function AppearanceSection() {
   const [preference, setPreference] = useState<EffectsPreference>(readPreference);
 
@@ -48,17 +62,25 @@ function AppearanceSection() {
   }
 
   const OPTIONS: { value: EffectsPreference; label: string; hint: string }[] = [
-    { value: 'auto', label: 'Auto', hint: 'Measures your frame rate and disables them if the page struggles.' },
+    {
+      value: 'auto',
+      label: 'Auto',
+      hint: 'Measures your frame rate and disables them if the page struggles.',
+    },
     { value: 'on', label: 'Always on', hint: 'Keep the swaying trees regardless.' },
-    { value: 'off', label: 'Off', hint: 'Plain background. Fastest, especially without hardware acceleration.' },
+    {
+      value: 'off',
+      label: 'Off',
+      hint: 'Plain background. Fastest, especially without hardware acceleration.',
+    },
   ];
 
   return (
     <section className="card p-6">
       <h2 className="mb-1 text-lg font-medium text-base-50">Appearance</h2>
       <p className="mb-4 text-sm text-base-500">
-        Background effects are decorative. Turning them off costs nothing but the scenery and makes the
-        panel noticeably lighter on machines without GPU acceleration.
+        Background effects are decorative. Turning them off costs nothing but the scenery and makes
+        the panel noticeably lighter on machines without GPU acceleration.
       </p>
       <div className="space-y-2">
         {OPTIONS.map((option) => (
@@ -137,7 +159,12 @@ function AccountSection() {
           <label className="label" htmlFor="account-username">
             Username
           </label>
-          <input id="account-username" className="input" value={username} onChange={(e) => setUsername(e.target.value)} />
+          <input
+            id="account-username"
+            className="input"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+          />
         </div>
         <div>
           <label className="label" htmlFor="account-new-password">
@@ -215,8 +242,8 @@ function PublicAccessDefaults() {
     <div className="card p-5">
       <h3 className="mb-1 font-medium text-base-50">Public access defaults</h3>
       <p className="mb-4 text-sm text-base-500">
-        Pre-fills the playit.gg secret key when enabling public access on a server, so it's a paste once instead of
-        per-server.
+        Pre-fills the playit.gg secret key when enabling public access on a server, so it's a paste
+        once instead of per-server.
       </p>
 
       <label className="label" htmlFor="default-playit-key">
@@ -248,17 +275,217 @@ function formatBytes(bytes: number): string {
   return `${Math.round(bytes / 1024)} KB`;
 }
 
+/** Server data directories with no server pointing at them. */
+function OrphanedData() {
+  const [orphans, setOrphans] = useState<OrphanDir[] | null>(null);
+  const [totalBytes, setTotalBytes] = useState(0);
+  const [games, setGames] = useState<GameDef[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState<string | null>(null);
+  const [restoreGame, setRestoreGame] = useState('');
+  const [restoreName, setRestoreName] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
+  const load = () =>
+    storageApi
+      .orphans()
+      .then((r) => {
+        setOrphans(r.orphans);
+        setTotalBytes(r.totalBytes);
+      })
+      .catch(() => setOrphans([]));
+
+  useEffect(() => {
+    load();
+    gamesApi
+      .list()
+      .then(setGames)
+      .catch(() => undefined);
+  }, []);
+
+  const beginRestore = (o: OrphanDir) => {
+    setRestoring(o.id);
+    setConfirmingDelete(null);
+    setError(null);
+    setRestoreGame(o.guessedGame ?? '');
+    setRestoreName(o.guessedGameName ? `Restored ${o.guessedGameName}` : 'Restored server');
+  };
+
+  const doRestore = async (o: OrphanDir) => {
+    if (!restoreGame) return;
+    setBusy(o.id);
+    setError(null);
+    try {
+      await storageApi.restore(o.id, {
+        game: restoreGame,
+        name: restoreName.trim() || 'Restored server',
+        memoryMb: 2048,
+      });
+      setRestoring(null);
+      setNote(
+        `Restored "${restoreName}". It appears on your servers list, stopped — check its settings before starting it.`,
+      );
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to restore');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doDelete = async (o: OrphanDir) => {
+    setBusy(o.id);
+    setError(null);
+    try {
+      await storageApi.remove(o.id);
+      setConfirmingDelete(null);
+      setNote(`Deleted ${formatBytes(o.sizeBytes)} of leftover data.`);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to delete');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (orphans !== null && orphans.length === 0) return null;
+
+  return (
+    <div className="card p-5">
+      <h3 className="mb-1 font-medium text-base-50">Leftover server data</h3>
+      <p className="mb-4 text-sm text-base-500">
+        {orphans === null
+          ? 'Checking…'
+          : `${orphans.length} folder${orphans.length === 1 ? '' : 's'} on disk that no server is using — ${formatBytes(totalBytes)} in total. Deleting a server keeps its files unless you ask otherwise, and reinstalling Outpost leaves them all behind. Restore one to get the server back, or delete it to reclaim the space.`}
+      </p>
+
+      {note && <p className="mb-3 text-xs text-accent-400">{note}</p>}
+      {error && <p className="mb-3 text-xs text-red-400">{error}</p>}
+
+      <div className="divide-y divide-base-800 rounded-xl border border-base-800 bg-base-950/60 px-3">
+        {(orphans ?? []).map((o) => (
+          <div key={o.id} className="py-2.5">
+            <div className="flex items-center gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm text-base-100">
+                  {o.guessedGameName ?? 'Unrecognised'}
+                  <span className="ml-2 text-xs text-base-500">{formatBytes(o.sizeBytes)}</span>
+                  {o.empty && (
+                    <span className="ml-2 text-xs text-base-600">empty — safe to delete</span>
+                  )}
+                </p>
+                <p className="truncate font-mono text-[11px] text-base-600">{o.id}</p>
+              </div>
+              {!o.empty && (
+                <button
+                  className="btn-secondary shrink-0 !py-1 !text-xs"
+                  disabled={busy === o.id}
+                  onClick={() => beginRestore(o)}
+                >
+                  Restore
+                </button>
+              )}
+              <button
+                className="shrink-0 text-xs text-red-400/80 hover:text-red-400"
+                disabled={busy === o.id}
+                onClick={() => {
+                  setRestoring(null);
+                  setConfirmingDelete(confirmingDelete === o.id ? null : o.id);
+                }}
+              >
+                Delete
+              </button>
+            </div>
+
+            {restoring === o.id && (
+              <div className="mt-2 space-y-2 rounded-lg bg-base-800/50 p-3">
+                <p className="text-xs text-base-400">
+                  Outpost can tell what game this was from its files, but not which loader or
+                  version it ran — pick the game, then adjust the rest in the server's settings
+                  afterwards. The files stay exactly where they are.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <input
+                    className="input !py-1 !text-xs"
+                    style={{ flex: '1 1 12rem' }}
+                    value={restoreName}
+                    onChange={(e) => setRestoreName(e.target.value)}
+                    placeholder="Server name"
+                  />
+                  <div className="w-40">
+                    <Select
+                      value={restoreGame}
+                      onChange={setRestoreGame}
+                      options={games.map((g) => ({ value: g.id, label: g.displayName }))}
+                    />
+                  </div>
+                  <button
+                    className="btn-primary !py-1 !text-xs"
+                    disabled={!restoreGame || busy === o.id}
+                    onClick={() => doRestore(o)}
+                  >
+                    {busy === o.id ? 'Restoring…' : 'Restore'}
+                  </button>
+                  <button
+                    className="btn-secondary !py-1 !text-xs"
+                    onClick={() => setRestoring(null)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {confirmingDelete === o.id && (
+              <div className="mt-2 rounded-lg bg-red-500/5 p-3">
+                <p className="mb-2 text-xs text-red-300">
+                  Permanently delete {formatBytes(o.sizeBytes)}, including any worlds and saves
+                  inside. This cannot be undone.
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    className="btn-danger !px-2.5 !py-1 !text-xs"
+                    disabled={busy === o.id}
+                    onClick={() => doDelete(o)}
+                  >
+                    {busy === o.id ? 'Deleting…' : 'Yes, delete it'}
+                  </button>
+                  <button
+                    className="btn-secondary !px-2.5 !py-1 !text-xs"
+                    onClick={() => setConfirmingDelete(null)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function GameFileCache() {
   const [games, setGames] = useState<CachedGame[] | null>(null);
   const [settings, setSettings] = useState<PanelSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
 
-  const load = () => gameCacheApi.list().then((r) => setGames(r.games)).catch(() => undefined);
+  const load = () =>
+    gameCacheApi
+      .list()
+      .then((r) => setGames(r.games))
+      .catch(() => undefined);
 
   useEffect(() => {
     load();
-    settingsApi.get().then(setSettings).catch(() => undefined);
+    settingsApi
+      .get()
+      .then(setSettings)
+      .catch(() => undefined);
   }, []);
 
   // Downloads run detached on the server and take tens of minutes, so poll while any is in flight.
@@ -292,8 +519,9 @@ function GameFileCache() {
     <div className="card p-5">
       <h3 className="mb-1 font-medium text-base-50">Game file cache</h3>
       <p className="mb-4 text-sm text-base-500">
-        Some games download their whole install from Steam every time you make a server — Garry's Mod alone is about 7 GB
-        of it. Keeping one shared copy here means every server after the first starts almost immediately.
+        Some games download their whole install from Steam every time you make a server — 7 Days to
+        Die alone is about 14 GB of it. Keeping one shared copy here means every server after the
+        first starts almost immediately.
       </p>
 
       <label className="mb-4 flex cursor-pointer items-start gap-2.5">
@@ -306,7 +534,8 @@ function GameFileCache() {
         <span className="text-sm text-base-200">
           Use cached game files for new servers
           <span className="mt-0.5 block text-xs text-base-500">
-            Turn this off to keep nothing pre-staged on disk — every server then downloads its own copy.
+            Turn this off to keep nothing pre-staged on disk — every server then downloads its own
+            copy.
           </span>
         </span>
       </label>
@@ -322,7 +551,10 @@ function GameFileCache() {
       ) : (
         <ul className="divide-y divide-base-800">
           {games.map((game) => (
-            <li key={game.gameId} className="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
+            <li
+              key={game.gameId}
+              className="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0"
+            >
               <div className="min-w-0">
                 <p className="text-sm text-base-100">{game.displayName}</p>
                 <p className="text-xs text-base-500">
@@ -346,7 +578,10 @@ function GameFileCache() {
                   >
                     Delete
                   </button>
-                  <button className="btn-secondary !px-2.5 !py-1 !text-xs" onClick={() => setConfirmingDelete(null)}>
+                  <button
+                    className="btn-secondary !px-2.5 !py-1 !text-xs"
+                    onClick={() => setConfirmingDelete(null)}
+                  >
                     Cancel
                   </button>
                 </div>
@@ -407,9 +642,18 @@ function ServerDefaults() {
   return (
     <div className="card p-5">
       <h3 className="mb-1 font-medium text-base-50">New server defaults</h3>
-      <p className="mb-4 text-sm text-base-500">Starting memory allocation shown in the "New server" wizard.</p>
+      <p className="mb-4 text-sm text-base-500">
+        Starting memory allocation shown in the "New server" wizard.
+      </p>
 
-      <MemorySlider value={memoryMb} onChange={setMemoryMb} min={512} max={maxMemoryMb(settings?.hostMemoryMb)} step={512} disabled={busy} />
+      <MemorySlider
+        value={memoryMb}
+        onChange={setMemoryMb}
+        min={512}
+        max={maxMemoryMb(settings?.hostMemoryMb)}
+        step={512}
+        disabled={busy}
+      />
 
       {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
 
@@ -421,4 +665,3 @@ function ServerDefaults() {
     </div>
   );
 }
-

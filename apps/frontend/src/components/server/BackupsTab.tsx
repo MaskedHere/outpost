@@ -10,9 +10,15 @@ export default function BackupsTab({ serverId }: { serverId: string }) {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState<{ id: string; action: 'restore' | 'delete' } | null>(null);
+  const [confirming, setConfirming] = useState<{ id: string; action: 'restore' | 'delete' } | null>(
+    null,
+  );
 
-  const load = () => backupsApi.list(serverId).then(setBackups).catch((e) => setError(e.message));
+  const load = () =>
+    backupsApi
+      .list(serverId)
+      .then(setBackups)
+      .catch((e) => setError(e.message));
 
   useEffect(() => {
     load();
@@ -75,21 +81,31 @@ export default function BackupsTab({ serverId }: { serverId: string }) {
               {isConfirming ? (
                 <div className="flex items-center gap-3">
                   <span className="text-xs text-base-500">
-                    {confirming.action === 'restore' ? 'Replace current server files?' : 'Delete this backup?'}
+                    {confirming.action === 'restore'
+                      ? 'Replace current server files?'
+                      : 'Delete this backup?'}
                   </span>
                   <button
                     className="text-xs font-medium text-red-400 hover:text-red-300"
-                    onClick={() => (confirming.action === 'restore' ? restoreBackup(b.id) : deleteBackup(b.id))}
+                    onClick={() =>
+                      confirming.action === 'restore' ? restoreBackup(b.id) : deleteBackup(b.id)
+                    }
                   >
                     Confirm
                   </button>
-                  <button className="text-xs text-base-500 hover:text-base-200" onClick={() => setConfirming(null)}>
+                  <button
+                    className="text-xs text-base-500 hover:text-base-200"
+                    onClick={() => setConfirming(null)}
+                  >
                     Cancel
                   </button>
                 </div>
               ) : (
                 <div className="flex gap-3">
-                  <a className="text-xs text-base-500 hover:text-accent-400" href={backupsApi.downloadUrl(serverId, b.id)}>
+                  <a
+                    className="text-xs text-base-500 hover:text-accent-400"
+                    href={backupsApi.downloadUrl(serverId, b.id)}
+                  >
                     Download
                   </a>
                   <button
@@ -109,7 +125,9 @@ export default function BackupsTab({ serverId }: { serverId: string }) {
             </div>
           );
         })}
-        {backups.length === 0 && <p className="py-6 text-center text-sm text-base-500">No backups yet.</p>}
+        {backups.length === 0 && (
+          <p className="py-6 text-center text-sm text-base-500">No backups yet.</p>
+        )}
       </div>
     </div>
   );

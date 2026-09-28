@@ -3,29 +3,25 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { getGameDefinition, listGameDefinitions } from '../games/registry.js';
-import { createServerContainer, removeContainer, getContainerStatus } from '../docker/containers.js';
+import {
+  createServerContainer,
+  removeContainer,
+  getContainerStatus,
+} from '../docker/containers.js';
 import { allocatePorts } from '../docker/ports.js';
 import { getServerReadiness } from './readinessService.js';
 
 /**
- * A shared, per-game copy of the large game/engine files that SteamCMD-backed images would
- * otherwise download from Steam in full for every single new server — 6.87GB for Garry's Mod alone,
- * measured live on a fresh create. The bytes are identical for everyone, so they're kept once here
- * and copied into each new server's own data directory at create time.
- *
- * Only volumes a GameDefinition explicitly names via `contentCache` are ever cached, so per-server
- * state (world saves, configs, RCON secrets) can't leak between servers — see the doc comment on
- * GameDefinition.contentCache.
+ * A shared per-game copy of the large game/engine files SteamCMD images would otherwise download
+ * for every new server. The files are identical for everyone, so they're stored once and copied
+ * into each new server's data directory at create time.
  */
 
 function cacheDirFor(gameId: string): string {
   return path.join(config.gameCacheDir, gameId);
 }
 
-/** A cache is only usable once it's been fully written — an interrupted copy (crash, restart,
- *  killed prewarm) would otherwise leave a half-populated directory that looks cached but would
- *  seed every future server with a broken install. The marker file is written last, so its
- *  presence is the only thing that counts as "cached". */
+/** A cache is only usable once it's been fully written. */
 function markerPathFor(gameId: string): string {
   return path.join(cacheDirFor(gameId), '.outpost-cache-complete');
 }
@@ -40,8 +36,7 @@ export interface CachedGameInfo {
   busy: boolean;
 }
 
-// Populating a cache means copying several GB, so it runs detached — this tracks which games are
-// mid-copy (or mid-prewarm) so the UI can show progress and duplicate requests get rejected.
+// Populating a cache means copying several GB, so it runs detached.
 const busyGames = new Set<string>();
 
 export function isCacheBusy(gameId: string): boolean {
@@ -93,9 +88,7 @@ export async function listCaches(): Promise<CachedGameInfo[]> {
   );
 }
 
-/** Copies a cached game install into a brand-new server's content directory. No-op when this game
- *  has nothing cacheable, or nothing cached yet — the server then just downloads it the slow way,
- *  exactly as it did before this cache existed. */
+/** Copies a cached game install into a brand-new server's content directory. */
 export async function restoreCacheInto(gameId: string, destDir: string): Promise<boolean> {
   const def = getGameDefinition(gameId);
   if (!def.contentCache) return false;
@@ -107,15 +100,14 @@ export async function restoreCacheInto(gameId: string, destDir: string): Promise
   return true;
 }
 
-/** Captures a finished install into the shared cache. Only ever called for a server that actually
- *  reached 'running', so the install is known-good rather than a half-downloaded directory. */
+/** Captures a finished install into the shared cache. */
 export async function saveCacheFrom(gameId: string, srcDir: string): Promise<void> {
   const def = getGameDefinition(gameId);
   if (!def.contentCache) return;
 
   const dest = cacheDirFor(gameId);
-  // Copy into a scratch directory and swap it in only once it's complete, so an interrupted copy
-  // can never leave a partially-written cache sitting where the next server create would find it.
+  // Copy into a scratch directory and swap it in when complete, so an interrupted copy never leaves
+  // a partial cache behind.
   const staging = `${dest}.partial`;
   await fs.rm(staging, { recursive: true, force: true });
   await fs.mkdir(path.dirname(dest), { recursive: true });
@@ -125,7 +117,11 @@ export async function saveCacheFrom(gameId: string, srcDir: string): Promise<voi
     await fs.rm(path.join(staging, relative), { recursive: true, force: true });
   }
 
-  await fs.writeFile(path.join(staging, '.outpost-cache-complete'), new Date().toISOString(), 'utf8');
+  await fs.writeFile(
+    path.join(staging, '.outpost-cache-complete'),
+    new Date().toISOString(),
+    'utf8',
+  );
   await fs.rm(dest, { recursive: true, force: true });
   await fs.rename(staging, dest);
 }
@@ -135,8 +131,7 @@ export async function deleteCache(gameId: string): Promise<void> {
   await fs.rm(`${cacheDirFor(gameId)}.partial`, { recursive: true, force: true });
 }
 
-/** Where a given server keeps the content this game caches — null when the game has nothing
- *  cacheable at all. */
+/** Where a given server keeps the content this game caches. */
 export function contentDirFor(gameId: string, dataPath: string): string | null {
   const def = getGameDefinition(gameId);
   if (!def.contentCache) return null;
@@ -146,14 +141,10 @@ export function contentDirFor(gameId: string, dataPath: string): string | null {
 const PREWARM_TIMEOUT_MS = 90 * 60 * 1000;
 const PREWARM_POLL_MS = 15_000;
 
-/** Downloads a game's content up front, with no server attached, so the first real server someone
- *  creates starts instantly instead of sitting through a multi-GB Steam download. Works by booting
- *  a throwaway container exactly as a real server would, waiting for it to finish installing and
- *  come up, then capturing its content directory into the shared cache and tearing it down.
- *
- *  Detached and slow (tens of minutes for the bigger games) — callers get a "started" acknowledgement
- *  and poll listCaches() for the result. Never throws to the caller; a failure just leaves the game
- *  uncached, exactly as it was before. */
+/**
+ * Downloads a game's content ahead of time by booting a throwaway container, waiting for the
+ * install to finish, and capturing its content directory into the cache.
+ */
 export function startPrewarm(gameId: string): void {
   const def = getGameDefinition(gameId);
   if (!def.contentCache || busyGames.has(gameId)) return;
@@ -204,8 +195,7 @@ export function startPrewarm(gameId: string): void {
             restartCount: status.restartCount,
           },
         );
-        // Only a confirmed 'running' means the game itself actually came up — see the note in
-        // readinessService on why the grace-period guess must not be trusted here.
+        // Only a confirmed 'running' means the game itself came up.
         if (readiness === 'running' && confirmed) {
           installed = true;
           break;
@@ -217,7 +207,9 @@ export function startPrewarm(gameId: string): void {
         await saveCacheFrom(gameId, contentDir);
       }
     } catch {
-      await fs.rm(`${cacheDirFor(gameId)}.partial`, { recursive: true, force: true }).catch(() => undefined);
+      await fs
+        .rm(`${cacheDirFor(gameId)}.partial`, { recursive: true, force: true })
+        .catch(() => undefined);
     } finally {
       if (containerId) await removeContainer(containerId).catch(() => undefined);
       await fs.rm(dataPath, { recursive: true, force: true }).catch(() => undefined);
@@ -226,10 +218,10 @@ export function startPrewarm(gameId: string): void {
   })();
 }
 
-/** Fills an empty cache from the first server of that game to finish installing, so the next
- *  server created skips the multi-GB download entirely without anyone having to ask for it. Cheap
- *  to call repeatedly: it bails immediately once a cache exists. Detached, because copying several
- *  GB takes far longer than the status poll that triggers it. */
+/**
+ * Fills an empty cache from the first server of that game to finish installing. Returns immediately
+ * once a cache exists; the copy runs detached.
+ */
 export function captureCacheIfEmpty(gameId: string, dataPath: string): void {
   const contentDir = contentDirFor(gameId, dataPath);
   if (!contentDir || busyGames.has(gameId)) return;
@@ -241,7 +233,9 @@ export function captureCacheIfEmpty(gameId: string, dataPath: string): void {
       await saveCacheFrom(gameId, contentDir);
     } catch {
       // A failed capture just means the next server downloads the game itself, same as before.
-      await fs.rm(`${cacheDirFor(gameId)}.partial`, { recursive: true, force: true }).catch(() => undefined);
+      await fs
+        .rm(`${cacheDirFor(gameId)}.partial`, { recursive: true, force: true })
+        .catch(() => undefined);
     } finally {
       busyGames.delete(gameId);
     }

@@ -7,25 +7,26 @@ import {
   resolveDownloadUrl,
   findServerPackFileId,
   resolveRequiredDependencyChain,
+  searchPalworldMods,
+  PALWORLD_CATEGORIES,
+  PALWORLD_FILTER_TAGS,
+  CURSEFORGE_MC_CATEGORIES,
 } from '../curseforge/scraper.js';
 import { getProject as getModrinthProject } from '../modrinth/client.js';
-import { importPack, ImportError, classifyJarsByHash, type ImportedItem, type UnresolvedEntry } from '../modrinth/import.js';
+import {
+  importPack,
+  ImportError,
+  classifyJarsByHash,
+  type ImportedItem,
+  type UnresolvedEntry,
+} from '../modrinth/import.js';
 import { createPackFromImportResult, persistPackItems } from './modpacks.js';
 import { createImportJob, updateImportJob, getImportJob } from '../jobs/importJobs.js';
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-/**
- * Best-effort client/server side tags for CurseForge results.
- *
- * CurseForge simply does not publish this. Modrinth does, and the overwhelming majority of mods are
- * listed on both under the same slug, so the tag is borrowed from there. A miss is not an error --
- * the result is returned untagged and the UI says "unknown" rather than guessing, because wrongly
- * labelling a mod server-safe is worse than admitting we do not know.
- *
- * Lookups are capped and time-boxed so a slow or unreachable Modrinth can never hold up a search.
- */
+/** Best-effort client/server side tags for CurseForge results. */
 const sideTagCache = new Map<string, { clientSide: string; serverSide: string } | null>();
 
 async function withSideTags<T extends { slug: string }>(hits: T[]) {
@@ -37,14 +38,15 @@ async function withSideTags<T extends { slug: string }>(hits: T[]) {
       try {
         const project = await Promise.race([
           getModrinthProject(hit.slug),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), LOOKUP_TIMEOUT_MS)),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('timeout')), LOOKUP_TIMEOUT_MS),
+          ),
         ]);
         const tags = { clientSide: project.client_side, serverSide: project.server_side };
         sideTagCache.set(hit.slug, tags);
         return { ...hit, ...tags };
       } catch {
-        // Not on Modrinth, or Modrinth is unhappy. Cache the miss so a search for the same term
-        // does not re-ask every time.
+        // Not on Modrinth, or Modrinth is unhappy.
         sideTagCache.set(hit.slug, null);
         return hit;
       }
@@ -67,35 +69,49 @@ export async function curseforgeRoutes(app: FastifyInstance) {
       return { hits };
     } catch (err) {
       app.log.error(err);
-      return reply.code(502).send({ error: "Failed to search CurseForge — their site may have changed, or is temporarily blocking automated access." });
+      return reply.code(502).send({
+        error:
+          'Failed to search CurseForge — their site may have changed, or is temporarily blocking automated access.',
+      });
     }
   });
 
-  // Individual-mod search for the "Build modpack" flow (add mods to a pack one at a time) — same
-  // scraper, just class: 'mc-mods' instead of 'modpacks'. See /api/curseforge/mods/add for what
-  // happens when one of these actually gets added.
+  // Individual-mod search for the "Build modpack" flow (add mods to a pack one at a time)
   app.get('/api/curseforge/mods', async (request, reply) => {
-    const query = request.query as { q?: string; mcVersion?: string; loader?: string; offset?: string };
+    const query = request.query as {
+      q?: string;
+      mcVersion?: string;
+      loader?: string;
+      category?: string;
+      offset?: string;
+    };
     try {
       const hits = await searchMods({
         query: query.q ?? '',
         mcVersion: query.mcVersion,
         loader: query.loader,
+        category: query.category || undefined,
         offset: query.offset ? Number(query.offset) : 0,
       });
       return { hits: await withSideTags(hits) };
     } catch (err) {
       app.log.error(err);
-      return reply.code(502).send({ error: "Failed to search CurseForge — their site may have changed, or is temporarily blocking automated access." });
+      return reply.code(502).send({
+        error:
+          'Failed to search CurseForge — their site may have changed, or is temporarily blocking automated access.',
+      });
     }
   });
 
-  // Downloads one CurseForge file and classifies it the same way the full-pack import does: hash it,
-  // and either match it to Modrinth (bytes still deployed locally — see ImportedItem.fileBuffer) or
-  // keep it as a local file. Shared by the primary mod and every dependency below, since it's the
-  // same operation either way. Returns null (not an error) for a client-only mod — the caller decides
-  // whether that's fatal (the mod the user actually picked) or just skippable (a dependency).
-  async function downloadAndClassify(slug: string, fileId: number): Promise<{ item: ImportedItem; clientOnlyLabel?: string } | null> {
+  /** The category filters offered alongside a CurseForge mod search. */
+  app.get('/api/curseforge/categories', async () => ({ categories: CURSEFORGE_MC_CATEGORIES }));
+
+  // Downloads one CurseForge file and classifies it like the full-pack import does. Returns null
+  // for a client-only mod; the caller decides whether that's fatal.
+  async function downloadAndClassify(
+    slug: string,
+    fileId: number,
+  ): Promise<{ item: ImportedItem; clientOnlyLabel?: string } | null> {
     const downloadUrl = await resolveDownloadUrl(slug, fileId, 'mc-mods');
     const fileRes = await fetch(downloadUrl, { headers: { 'User-Agent': USER_AGENT } });
     if (!fileRes.ok) return null;
@@ -110,34 +126,45 @@ export async function curseforgeRoutes(app: FastifyInstance) {
     return { item: matched[0]! };
   }
 
-  // Adds one mod (picked from the search above) straight into an existing pack — resolves the real
-  // file the same way the full-pack import does (see minecraft.ts's manifest resolution comment for
-  // why curseforge.com/projects/<id> not being needed here: we already have the slug from search).
-  // Refuses a client-only mod outright rather than silently adding something that would crash the
-  // server on boot. Also walks the mod's *actual* CurseForge-declared "Required Dependency" relations
-  // (see resolveRequiredDependencyChain) and pulls those in too — e.g. adding Waystones also installs
-  // Balm — since CurseForge itself lists these on every project's Relations tab, this works for any
-  // CurseForge mod rather than only ones that happen to also be mirrored on Modrinth.
+  // Adds one mod (picked from the search above) straight into an existing pack.
   app.post('/api/curseforge/mods/add', async (request, reply) => {
-    const body = (request.body ?? {}) as { packId?: string; slug?: string; fileId?: number };
+    const body = (request.body ?? {}) as {
+      packId?: string;
+      slug?: string;
+      fileId?: number;
+      logoUrl?: string | null;
+    };
     if (!body.packId || !body.slug || !body.fileId) {
       return reply.code(400).send({ error: 'packId, slug, and fileId are required' });
     }
 
     try {
-      const pack = await prisma.pack.findUnique({ where: { id: body.packId }, include: { items: true } });
+      const pack = await prisma.pack.findUnique({
+        where: { id: body.packId },
+        include: { items: true },
+      });
       if (!pack) return reply.code(404).send({ error: 'Pack not found' });
 
       const primary = await downloadAndClassify(body.slug, body.fileId);
-      if (!primary) return reply.code(502).send({ error: 'Failed to download this mod from CurseForge' });
+      if (!primary)
+        return reply.code(502).send({ error: 'Failed to download this mod from CurseForge' });
       if (primary.clientOnlyLabel) {
-        return reply.code(400).send({ error: `${primary.clientOnlyLabel} is a client-only mod — it doesn't run on a dedicated server.` });
+        return reply.code(400).send({
+          error: `${primary.clientOnlyLabel} is a client-only mod — it doesn't run on a dedicated server.`,
+        });
       }
 
-      const toAdd: ImportedItem[] = [primary.item];
+      // Only when the item didn't already resolve to a Modrinth project.
+      const toAdd: ImportedItem[] = [
+        { ...primary.item, iconUrl: primary.item.iconUrl ?? body.logoUrl ?? null },
+      ];
       const existingFilenames = new Set(pack.items.map((i) => i.filename));
 
-      const depChain = await resolveRequiredDependencyChain(body.slug, pack.mcVersion, pack.loader).catch(() => []);
+      const depChain = await resolveRequiredDependencyChain(
+        body.slug,
+        pack.mcVersion,
+        pack.loader,
+      ).catch(() => []);
       for (const dep of depChain) {
         const resolved = await downloadAndClassify(dep.slug, dep.fileId).catch(() => null);
         if (!resolved || resolved.clientOnlyLabel) continue;
@@ -147,19 +174,53 @@ export async function curseforgeRoutes(app: FastifyInstance) {
       }
 
       await persistPackItems(body.packId, toAdd);
-      const updated = await prisma.pack.findUnique({ where: { id: body.packId }, include: { items: true } });
+      const updated = await prisma.pack.findUnique({
+        where: { id: body.packId },
+        include: { items: true },
+      });
       if (!updated) return reply.code(404).send({ error: 'Pack not found' });
       return { pack: updated };
     } catch (err) {
       app.log.error(err);
-      return reply.code(502).send({ error: err instanceof Error ? err.message : 'Failed to add this mod' });
+      return reply
+        .code(502)
+        .send({ error: err instanceof Error ? err.message : 'Failed to add this mod' });
     }
   });
 
-  // Resolving the download link, downloading a (sometimes 100-200MB+) file, and matching hundreds
-  // of mods against Modrinth can take minutes for a big pack — too long for one blocking request.
-  // This kicks the work off in the background and returns a job id immediately; the frontend polls
-  // GET .../import-jobs/:jobId for live phase/progress until it lands on 'done' or 'error'.
+  // CurseForge hosts Palworld mods under the same page structure as Minecraft's, so the same
+  // scraper covers them.
+  app.get('/api/curseforge/palworld/categories', async () => ({
+    types: PALWORLD_CATEGORIES,
+    tags: PALWORLD_FILTER_TAGS,
+  }));
+
+  app.get('/api/curseforge/palworld/mods', async (request, reply) => {
+    const query = request.query as {
+      q?: string;
+      type?: string;
+      category?: string;
+      offset?: string;
+    };
+    try {
+      const hits = await searchPalworldMods({
+        query: query.q ?? '',
+        type: query.type,
+        category: query.category || undefined,
+        offset: query.offset ? Number(query.offset) : 0,
+      });
+      return { hits };
+    } catch (err) {
+      app.log.error(err);
+      return reply.code(502).send({
+        error:
+          'Failed to search CurseForge — their site may be temporarily blocking automated access.',
+      });
+    }
+  });
+
+  // Imports can take minutes, so this starts a background job and returns its id; the frontend
+  // polls GET .../import-jobs/:jobId for progress.
   app.post('/api/curseforge/modpacks/import', async (request, reply) => {
     const body = (request.body ?? {}) as {
       slug?: string;
@@ -168,14 +229,15 @@ export async function curseforgeRoutes(app: FastifyInstance) {
       loader?: string;
       name?: string;
     };
-    if (!body.slug || !body.fileId) return reply.code(400).send({ error: 'slug and fileId are required' });
-    if (!body.mcVersion || !body.loader) return reply.code(400).send({ error: 'mcVersion and loader are required' });
+    if (!body.slug || !body.fileId)
+      return reply.code(400).send({ error: 'slug and fileId are required' });
+    if (!body.mcVersion || !body.loader)
+      return reply.code(400).send({ error: 'mcVersion and loader are required' });
 
     const jobId = createImportJob();
     reply.code(202).send({ jobId });
 
-    // Deliberately not awaited — the response above already went out. Every branch below updates
-    // the job's status instead of throwing, since there's no request left to reject.
+    // Not awaited - the response above already went out.
     void runImport(app, jobId, body as Required<typeof body>);
   });
 
@@ -194,11 +256,7 @@ async function runImport(
 ) {
   try {
     updateImportJob(jobId, { phase: 'resolving' });
-    // Prefer the pack's dedicated "Server Pack" file when it publishes one — it ships the actual
-    // mod jars directly instead of the default "Client" file's numeric-ID-only manifest, so import.ts
-    // can install every mod from its real bytes instead of guessing by name against Modrinth. Most
-    // smaller/personal packs don't publish one, in which case this just falls back to the file id
-    // the search result already gave us.
+    // Prefer the pack's dedicated "Server Pack" file when it publishes one.
     const serverPackFileId = await findServerPackFileId(body.slug).catch(() => null);
     const downloadUrl = await resolveDownloadUrl(body.slug, serverPackFileId ?? body.fileId);
 
@@ -238,7 +296,8 @@ async function runImport(
     });
   } catch (err) {
     app.log.error(err);
-    const message = err instanceof ImportError || err instanceof Error ? err.message : 'Import failed';
+    const message =
+      err instanceof ImportError || err instanceof Error ? err.message : 'Import failed';
     updateImportJob(jobId, { phase: 'error', error: message });
   }
 }

@@ -3,10 +3,7 @@ import { motion } from 'framer-motion';
 import { modrinthApi, pluginsApi, type ModrinthSearchHit, type ServerPlugin } from '../../lib/api';
 import { staggerContainer, staggerItem } from '../../lib/motion';
 
-/** Plugins only exist for Paper Minecraft servers — vanilla has no plugin loader, and the other
- *  variants (Fabric/Forge/NeoForge/Quilt) are mod loaders, a different ecosystem. Mirrors
- *  ModpackPanel's shape (search Modrinth, add/remove a list) but simpler: no dependency
- *  resolution, no deploy/export — plugins are managed directly on one already-existing server. */
+/** Plugins only exist for Paper Minecraft servers. */
 export default function PluginsPanel({ serverId }: { serverId: string }) {
   const [plugins, setPlugins] = useState<ServerPlugin[] | null>(null);
   const [mcVersion, setMcVersion] = useState<string | null>(null);
@@ -43,8 +40,7 @@ export default function PluginsPanel({ serverId }: { serverId: string }) {
     }
   };
 
-  // Popular plugins are worth showing before the user even searches — same idea as the modpack
-  // wizard's browse view.
+  // Popular plugins are worth showing before the user even searches.
   useEffect(() => {
     if (mcVersion) runSearch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -75,15 +71,18 @@ export default function PluginsPanel({ serverId }: { serverId: string }) {
   return (
     <div>
       <div className="mb-4 rounded-lg bg-base-800/70 px-3 py-2.5 text-xs text-base-500">
-        Changes here apply the next time this server restarts from scratch (e.g. after a memory change) — not
-        instantly on a plain restart, since the plugin list is baked in at container creation.
+        Changes here apply the next time this server restarts from scratch (e.g. after a memory
+        change) — not instantly on a plain restart, since the plugin list is baked in at container
+        creation.
       </div>
 
       {error && <p className="mb-4 text-sm text-red-400">{error}</p>}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <div>
-          <h3 className="mb-3 text-sm font-medium uppercase tracking-wide text-base-500">Browse plugins</h3>
+          <h3 className="mb-3 text-sm font-medium uppercase tracking-wide text-base-500">
+            Browse plugins
+          </h3>
           <form onSubmit={runSearch} className="mb-3 flex gap-2">
             <input
               className="input"
@@ -95,9 +94,18 @@ export default function PluginsPanel({ serverId }: { serverId: string }) {
               {searching ? '…' : 'Search'}
             </button>
           </form>
-          <motion.div variants={staggerContainer} initial="initial" animate="animate" className="card divide-y divide-base-800">
+          <motion.div
+            variants={staggerContainer}
+            initial="initial"
+            animate="animate"
+            className="card divide-y divide-base-800"
+          >
             {results.map((hit) => (
-              <motion.div variants={staggerItem} key={hit.project_id} className="flex items-center gap-3 p-3">
+              <motion.div
+                variants={staggerItem}
+                key={hit.project_id}
+                className="flex items-center gap-3 p-3"
+              >
                 {hit.icon_url && <img src={hit.icon_url} alt="" className="h-8 w-8 rounded" />}
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm text-base-100">{hit.title}</p>
@@ -109,29 +117,51 @@ export default function PluginsPanel({ serverId }: { serverId: string }) {
                   disabled={addedProjectIds.has(hit.project_id) || addingId === hit.project_id}
                   onClick={() => addPlugin(hit.project_id)}
                 >
-                  {addedProjectIds.has(hit.project_id) ? 'Added' : addingId === hit.project_id ? '…' : 'Add'}
+                  {addedProjectIds.has(hit.project_id)
+                    ? 'Added'
+                    : addingId === hit.project_id
+                      ? '…'
+                      : 'Add'}
                 </motion.button>
               </motion.div>
             ))}
-            {results.length === 0 && !searching && <p className="p-6 text-center text-sm text-base-500">No plugins found.</p>}
+            {results.length === 0 && !searching && (
+              <p className="p-6 text-center text-sm text-base-500">No plugins found.</p>
+            )}
           </motion.div>
         </div>
 
         <div>
-          <h3 className="mb-3 text-sm font-medium uppercase tracking-wide text-base-500">Installed</h3>
-          <motion.div variants={staggerContainer} initial="initial" animate="animate" className="card divide-y divide-base-800">
+          <h3 className="mb-3 text-sm font-medium uppercase tracking-wide text-base-500">
+            Installed
+          </h3>
+          <motion.div
+            variants={staggerContainer}
+            initial="initial"
+            animate="animate"
+            className="card divide-y divide-base-800"
+          >
             {plugins.map((item) => (
-              <motion.div variants={staggerItem} key={item.id} className="flex items-center justify-between p-3">
+              <motion.div
+                variants={staggerItem}
+                key={item.id}
+                className="flex items-center justify-between p-3"
+              >
                 <div>
                   <p className="text-sm text-base-100">{item.projectName}</p>
                   <p className="text-xs text-base-500">v{item.versionNumber}</p>
                 </div>
-                <button className="text-xs text-red-400/80 hover:text-red-400" onClick={() => removePlugin(item.id)}>
+                <button
+                  className="text-xs text-red-400/80 hover:text-red-400"
+                  onClick={() => removePlugin(item.id)}
+                >
                   Remove
                 </button>
               </motion.div>
             ))}
-            {plugins.length === 0 && <p className="p-6 text-center text-sm text-base-500">No plugins installed yet.</p>}
+            {plugins.length === 0 && (
+              <p className="p-6 text-center text-sm text-base-500">No plugins installed yet.</p>
+            )}
           </motion.div>
         </div>
       </div>

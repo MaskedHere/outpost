@@ -45,18 +45,36 @@ function Trace({
   const stepX = WIDTH / (MAX_POINTS - 1);
   const offset = MAX_POINTS - values.length;
   const lastX = last !== undefined ? (offset + values.length - 1) * stepX : null;
-  const lastY = last !== undefined ? HEIGHT - (max === 0 ? 0 : (Math.max(0, Math.min(max, last)) / max) * (HEIGHT - 6)) - 3 : null;
+  const lastY =
+    last !== undefined
+      ? HEIGHT - (max === 0 ? 0 : (Math.max(0, Math.min(max, last)) / max) * (HEIGHT - 6)) - 3
+      : null;
 
   return (
     <div className="relative">
       <div className="mb-1 flex items-center justify-between text-xs">
         <span className="font-medium text-base-300">{label}</span>
-        <span className="font-mono text-base-100">{last !== undefined ? formatValue(last) : '—'}</span>
+        <span className="font-mono text-base-100">
+          {last !== undefined ? formatValue(last) : '—'}
+        </span>
       </div>
-      <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="h-16 w-full overflow-visible" preserveAspectRatio="none">
+      <svg
+        viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+        className="h-16 w-full overflow-visible"
+        preserveAspectRatio="none"
+      >
         {/* Faint oscilloscope-style grid */}
         {[0.25, 0.5, 0.75].map((f) => (
-          <line key={f} x1={0} y1={HEIGHT * f} x2={WIDTH} y2={HEIGHT * f} stroke="currentColor" strokeWidth={1} className="text-base-800" />
+          <line
+            key={f}
+            x1={0}
+            y1={HEIGHT * f}
+            x2={WIDTH}
+            y2={HEIGHT * f}
+            stroke="currentColor"
+            strokeWidth={1}
+            className="text-base-800"
+          />
         ))}
         {values.length > 1 && (
           <path
@@ -73,7 +91,12 @@ function Trace({
           <g>
             <circle cx={lastX} cy={lastY} r={7} fill={color} opacity={0.25}>
               <animate attributeName="r" values="4;10;4" dur="1.2s" repeatCount="indefinite" />
-              <animate attributeName="opacity" values="0.35;0;0.35" dur="1.2s" repeatCount="indefinite" />
+              <animate
+                attributeName="opacity"
+                values="0.35;0;0.35"
+                dur="1.2s"
+                repeatCount="indefinite"
+              />
             </circle>
             <circle cx={lastX} cy={lastY} r={3} fill={color} />
           </g>
@@ -83,22 +106,16 @@ function Trace({
   );
 }
 
-/** A live, scrolling "vitals monitor" for the server — CPU/memory/player-count traces styled after
- *  a heart-rate monitor (oscilloscope grid, glowing scan point) rather than a fake ECG waveform, so
- *  it's genuinely useful at a glance and not just decorative.
- *
- *  CPU/memory are polled once a second directly (via /stats — plain docker stats, no RCON, no log
- *  tailing) purely while this tab is mounted, independent of ServerDetail's own slower ~5s poll.
- *  Player count rides along on that same 1s tick but its *value* only actually changes when
- *  ServerDetail's poll delivers a fresh one — RCON round-trips are exactly what's too expensive (and
- *  on some games, like TF2, outright risky — a Source engine server's own anti-flood protection can
- *  ban an IP that reconnects too often) to also run every second. */
+/** A live, scrolling "vitals monitor" for the server. */
 export default function StatusPanel({ server }: { server: GameServer }) {
   const [history, setHistory] = useState<Sample[]>([]);
   const playersRef = useRef<{ current: number; max: number | null }>({ current: 0, max: null });
 
   useEffect(() => {
-    playersRef.current = { current: server.players?.current ?? 0, max: server.players?.max ?? null };
+    playersRef.current = {
+      current: server.players?.current ?? 0,
+      max: server.players?.max ?? null,
+    };
   }, [server.players?.current, server.players?.max]);
 
   useEffect(() => {
@@ -136,7 +153,7 @@ export default function StatusPanel({ server }: { server: GameServer }) {
       cancelled = true;
       clearInterval(interval);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [server.id, server.status?.running]);
 
   const playersMax = history.at(-1)?.playersMax ?? null;
@@ -145,7 +162,9 @@ export default function StatusPanel({ server }: { server: GameServer }) {
     <div className="card p-5">
       <div className="mb-4 flex items-center justify-between">
         <h3 className="font-medium text-base-50">Status</h3>
-        <span className={`flex items-center gap-1.5 text-xs font-medium ${server.status?.running ? 'text-accent-400' : 'text-base-500'}`}>
+        <span
+          className={`flex items-center gap-1.5 text-xs font-medium ${server.status?.running ? 'text-accent-400' : 'text-base-500'}`}
+        >
           <span className="relative flex h-1.5 w-1.5">
             {server.status?.running && (
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-75" />
@@ -157,7 +176,9 @@ export default function StatusPanel({ server }: { server: GameServer }) {
       </div>
 
       {!server.status?.running ? (
-        <p className="py-6 text-center text-sm text-base-500">Start the server to see live stats here.</p>
+        <p className="py-6 text-center text-sm text-base-500">
+          Start the server to see live stats here.
+        </p>
       ) : history.length === 0 ? (
         <div className="space-y-5">
           {['CPU', 'Memory', 'Players'].map((label) => (

@@ -1,6 +1,6 @@
 import { config } from '../config.js';
 
-const USER_AGENT = 'outpost-panel/0.1.0 (https://github.com/outpost-panel/outpost)';
+const USER_AGENT = 'MaskedHere/outpost (https://github.com/MaskedHere/outpost)';
 
 async function modrinthFetch<T>(pathAndQuery: string): Promise<T> {
   const res = await fetch(`${config.modrinthApiBase}${pathAndQuery}`, {
@@ -20,8 +20,7 @@ export interface ModrinthSearchHit {
   icon_url: string | null;
   downloads: number;
   categories: string[];
-  /** Every Minecraft version this project supports, oldest first. Browsing modpacks is no longer
-   *  filtered by version, so the UI shows the newest of these to make each pack's target obvious. */
+  /** Every Minecraft version this project supports, oldest first. */
   versions?: string[];
   client_side: ModrinthSupportLevel;
   server_side: ModrinthSupportLevel;
@@ -65,9 +64,7 @@ export interface ModrinthProject {
   title: string;
   description: string;
   icon_url: string | null;
-  // Modrinth curates these independently of whatever a mod's own jar metadata claims — the source
-  // we lean on to detect client-only mods that a Forge/NeoForge dedicated server can't run, since a
-  // mod's own mods.toml frequently omits or misdeclares its side (see import.ts).
+  // Modrinth curates these independently of whatever a mod's own jar metadata claims.
   client_side: ModrinthSupportLevel;
   server_side: ModrinthSupportLevel;
 }
@@ -79,23 +76,22 @@ export async function searchMods(params: {
   query: string;
   mcVersion?: string;
   loader?: string;
-  /** A Modrinth category slug ("technology", "magic", ...) to narrow results to. */
+  /** A Modrinth category slug ("technology", "magic", etc.) to narrow results to. */
   category?: string;
   sort?: ModrinthSortIndex;
-  /** Drops mods Modrinth marks server_side: unsupported. Off by default so they still appear
-   *  (greyed out, clearly labelled) rather than vanishing with no explanation. */
+  /** Drops mods Modrinth marks server_side: unsupported. */
   serverOnly?: boolean;
   offset?: number;
   limit?: number;
 }): Promise<ModrinthSearchResult> {
   // Each inner array is OR'd and the outer array is AND'd, so loader and category go in separate
-  // entries — putting them together would match "fabric OR technology" instead of both.
+  // entries.
   const facets: string[][] = [['project_type:mod']];
   if (params.mcVersion) facets.push([`versions:${params.mcVersion}`]);
   if (params.loader) facets.push([`categories:${params.loader}`]);
   if (params.category) facets.push([`categories:${params.category}`]);
-  // Modrinth has no "server_side != unsupported" facet, so this asks for the two values that are
-  // installable instead — equivalent, and done server-side so paging stays correct.
+  // Modrinth has no "server_side != unsupported" facet, so request the two installable values
+  // instead (server-side, so paging stays correct).
   if (params.serverOnly) facets.push(['server_side:required', 'server_side:optional']);
 
   const qs = new URLSearchParams({
@@ -109,9 +105,7 @@ export async function searchMods(params: {
   return modrinthFetch<ModrinthSearchResult>(`/search?${qs.toString()}`);
 }
 
-// Modrinth's own project_type distinct from "mod" — Paper/Spigot plugins, not mod-loader mods.
-// itzg's image installs whatever MODRINTH_PROJECTS lists as plugins (not mods) automatically for a
-// TYPE=PAPER server, so this reuses that same install mechanism (see games/minecraft.ts).
+// Modrinth's own project_type distinct from "mod".
 export async function searchPlugins(params: {
   query: string;
   mcVersion?: string;
@@ -126,8 +120,7 @@ export async function searchPlugins(params: {
     facets: JSON.stringify(facets),
     offset: String(params.offset ?? 0),
     limit: String(params.limit ?? 20),
-    // Empty-query browsing (the common case for "show me popular plugins") should surface the
-    // most-used plugins first rather than Modrinth's relevance ranking, which isn't meaningful
+    // An empty query shows the most-downloaded plugins first, since relevance ranking means nothing
     // without a search term.
     ...(params.query ? {} : { index: 'downloads' }),
   });
@@ -163,14 +156,21 @@ export interface ModrinthGameVersion {
   major: boolean;
 }
 
-/** The full list of Minecraft versions Modrinth recognizes — same list its own site uses for the
- *  version picker, so anything a user selects here is guaranteed searchable/filterable later. */
+/** The full list of Minecraft versions Modrinth recognizes. */
 export async function getGameVersions(): Promise<ModrinthGameVersion[]> {
   return modrinthFetch<ModrinthGameVersion[]>('/tag/game_version');
 }
 
 export async function getProject(idOrSlug: string): Promise<ModrinthProject> {
   return modrinthFetch<ModrinthProject>(`/project/${encodeURIComponent(idOrSlug)}`);
+}
+
+/** Looks up many projects in one request. */
+export async function getProjects(ids: string[]): Promise<ModrinthProject[]> {
+  if (ids.length === 0) return [];
+  return modrinthFetch<ModrinthProject[]>(
+    `/projects?ids=${encodeURIComponent(JSON.stringify(ids))}`,
+  );
 }
 
 export async function getProjectVersions(
@@ -181,20 +181,19 @@ export async function getProjectVersions(
   if (params.mcVersion) qs.set('game_versions', JSON.stringify([params.mcVersion]));
   if (params.loader) qs.set('loaders', JSON.stringify([params.loader]));
   const suffix = qs.toString() ? `?${qs.toString()}` : '';
-  return modrinthFetch<ModrinthVersion[]>(`/project/${encodeURIComponent(idOrSlug)}/version${suffix}`);
+  return modrinthFetch<ModrinthVersion[]>(
+    `/project/${encodeURIComponent(idOrSlug)}/version${suffix}`,
+  );
 }
 
 export async function getVersion(versionId: string): Promise<ModrinthVersion> {
   return modrinthFetch<ModrinthVersion>(`/version/${encodeURIComponent(versionId)}`);
 }
 
-/**
- * Identifies files against Modrinth purely by content hash — the only way to recognize a mod jar
- * that arrived without any Modrinth project/version ID attached (a raw zip of jars, or a jar
- * bundled in a modpack that isn't Modrinth-hosted). Works for any file that happens to also be on
- * Modrinth, regardless of where it actually came from.
- */
-export async function lookupVersionsBySha1(hashes: string[]): Promise<Record<string, ModrinthVersion>> {
+/** Identifies files against Modrinth purely by content hash. */
+export async function lookupVersionsBySha1(
+  hashes: string[],
+): Promise<Record<string, ModrinthVersion>> {
   if (hashes.length === 0) return {};
   const res = await fetch(`${config.modrinthApiBase}/version_files`, {
     method: 'POST',
